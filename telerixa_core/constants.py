@@ -2,7 +2,7 @@ import os
 
 
 APP_NAME = "Telerixa"
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 
 LOG_DIR = "logs"
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
@@ -31,4 +31,3 @@ VALID_LARGE_FILE_ACTIONS = {
 
 ALBUM_LOOKUP_RADIUS = 20
 ALBUM_MESSAGES_CACHE_ATTR = "_telerixa_album_messages_cache"
-

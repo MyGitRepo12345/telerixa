@@ -8,6 +8,14 @@ This project follows semantic versioning while it is pre-1.0:
 - Minor: new user-visible features, settings, UI changes, or behavior changes.
 - Major: reserved for the first stable `1.0.0` release.
 
+## [0.2.5] - 2026-07-08
+
+### Changed
+
+- Moved Telegram post text formatting helpers into `telerixa_core/formatting.py`.
+- Kept reply and cross-reply formatting behavior by passing the Telegram client explicitly.
+- Updated Steam Deck deployment validation for the new formatting module.
+
 ## [0.2.4] - 2026-07-08
 
 ### Changed
