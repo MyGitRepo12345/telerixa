@@ -4,7 +4,7 @@ Reliable Telegram-to-Discord forwarding for media-heavy news channels.
 
 Telerixa is a production-style Telegram to Discord forwarding bot built for a real daily workflow: monitoring multiple Telegram news channels and reposting text, photos, videos, albums, and reply context into Discord through webhooks.
 
-Current version: `0.1.0`
+Current version: `0.2.0`
 
 This repository is also a QA portfolio project: it contains not only the bot itself, but also reliability work around retries, state persistence, file-size limits, runtime configuration, logging, and Steam Deck deployment.
 
@@ -22,6 +22,7 @@ This repository is also a QA portfolio project: it contains not only the bot its
 - Configurable Discord file-size limit and behavior for oversized media.
 - Startup catch-up limit for recovering after downtime without reposting the full backlog.
 - Console and file logging.
+- JSON-based localization with English and Russian catalogs.
 - Optional Discord alert mention when the bot crashes.
 - SSH deployment flow for Steam Deck without overwriting runtime files.
 
@@ -75,6 +76,7 @@ Fill in:
 - `TELEGRAM_API_ID`
 - `TELEGRAM_API_HASH`
 - `TELEGRAM_CHANNELS`
+- `LANGUAGE`, for example `en` or `ru`
 - `DISCORD_FILE_LIMIT_MB`
 - `LARGE_FILE_ACTION`
 - `STARTUP_CATCH_UP_LIMIT`

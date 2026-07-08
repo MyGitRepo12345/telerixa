@@ -13,6 +13,8 @@ import tempfile
 import webbrowser
 from logging.handlers import RotatingFileHandler
 
+from i18n import configure_language, get_language_options, normalize_language, tr
+
 
 CONFIG_FILE = Path("config.json")
 LOG_DIR = Path("logs")
@@ -29,11 +31,18 @@ DISCORD_WEBHOOK_PREFIXES = (
     "https://discordapp.com/api/webhooks/",
 )
 
-LARGE_FILE_ACTIONS = {
-    "send_text_link": "Отправлять текст и ссылку на Telegram",
-    "try_send_then_text": "Пробовать отправить, при ошибке отправлять текст",
-    "skip_post": "Пропускать пост и идти дальше",
-}
+LARGE_FILE_ACTION_KEYS = (
+    "send_text_link",
+    "try_send_then_text",
+    "skip_post",
+)
+
+
+def get_large_file_action_options():
+    return {
+        action_key: tr(f"ui.action.{action_key}")
+        for action_key in LARGE_FILE_ACTION_KEYS
+    }
 
 
 def setup_logging():
@@ -98,6 +107,7 @@ def default_config():
         "TELEGRAM_API_ID": 0,
         "TELEGRAM_API_HASH": "",
         "TELEGRAM_CHANNELS": [],
+        "LANGUAGE": "ru",
         "CHECK_INTERVAL": 60,
         "MAX_MESSAGE_LENGTH": 2000,
         "TIMEZONE": "Europe/Berlin",
@@ -117,6 +127,7 @@ def load_config():
                 config.update(loaded)
     except FileNotFoundError:
         pass
+    config["LANGUAGE"] = normalize_language(config.get("LANGUAGE", "ru"))
     return config
 
 
@@ -195,10 +206,10 @@ def parse_file_limit(raw_value):
     try:
         limit = int(raw_value)
     except (TypeError, ValueError):
-        return None, "Лимит файла должен быть целым числом от 1 до 500."
+        return None, tr("ui.file_limit_int")
 
     if limit < 1 or limit > 500:
-        return None, "Лимит файла должен быть в диапазоне от 1 до 500 MB."
+        return None, tr("ui.file_limit_range")
 
     return limit, ""
 
@@ -208,10 +219,10 @@ def parse_catch_up_limit(raw_value):
     try:
         limit = int(raw_value)
     except (TypeError, ValueError):
-        return None, "Хвост после старта должен быть целым числом от 0 до 500."
+        return None, tr("ui.catch_up_int")
 
     if limit < 0 or limit > 500:
-        return None, "Хвост после старта должен быть в диапазоне от 0 до 500 постов."
+        return None, tr("ui.catch_up_range")
 
     return limit, ""
 
@@ -221,20 +232,20 @@ def parse_max_queue_attempts(raw_value):
     try:
         attempts = int(raw_value)
     except (TypeError, ValueError):
-        return None, "Лимит retry должен быть целым числом от 1 до 200."
+        return None, tr("ui.max_queue_attempts_int")
 
     if attempts < 1 or attempts > 200:
-        return None, "Лимит retry должен быть в диапазоне от 1 до 200 попыток."
+        return None, tr("ui.max_queue_attempts_range")
 
     return attempts, ""
 
 
 def validate_webhook(webhook):
     if not webhook:
-        return "Discord webhook не может быть пустым."
+        return tr("ui.webhook_empty")
 
     if not webhook.startswith(DISCORD_WEBHOOK_PREFIXES):
-        return "Discord webhook должен начинаться с https://discord.com/api/webhooks/."
+        return tr("ui.webhook_prefix")
 
     return ""
 
@@ -243,6 +254,7 @@ def form_values_from_config(config):
     return {
         "discord_webhook_url": config.get("DISCORD_WEBHOOK_URL", ""),
         "telegram_channels": "\n".join(config.get("TELEGRAM_CHANNELS", [])),
+        "language": normalize_language(config.get("LANGUAGE", "ru")),
         "discord_file_limit_mb": str(config.get("DISCORD_FILE_LIMIT_MB", 25)),
         "large_file_action": config.get("LARGE_FILE_ACTION", "send_text_link"),
         "startup_catch_up_limit": str(config.get("STARTUP_CATCH_UP_LIMIT", 10)),
@@ -356,7 +368,7 @@ def render_log_panel(title, lines):
     if lines:
         body = "\n".join(escape(line) for line in lines)
     else:
-        body = "Записей пока нет."
+        body = tr("ui.no_log_entries")
 
     return f"""
         <div class="log-panel">
@@ -377,32 +389,32 @@ def render_queue_panel(pending_count, pending_items):
             retry_delay = ""
             if next_retry_ts is not None:
                 seconds = max(0, int(float(next_retry_ts) - now_ts))
-                retry_delay = f"через {seconds} сек"
+                retry_delay = tr("ui.retry_in_seconds", seconds=seconds)
             retry_text = next_retry_at or retry_delay or "-"
-            grouped_text = f", альбом {grouped_id}" if grouped_id else ""
+            grouped_text = tr("ui.album_suffix", grouped_id=grouped_id) if grouped_id else ""
             error_text = str(last_error or "").strip()
             if len(error_text) > 220:
                 error_text = error_text[:217] + "..."
             item_rows.append(
                 "<li>"
                 f"<strong>@{escape(str(channel))}/{escape(str(message_id))}</strong>"
-                f"<span>попыток: {escape(str(attempts))}{escape(grouped_text)}</span>"
-                f"<span>следующая попытка: {escape(str(retry_text))}</span>"
-                f"<span>ошибка: {escape(error_text or '-')}</span>"
+                f"<span>{escape(tr('ui.queue_attempts', attempts=attempts, grouped_text=grouped_text))}</span>"
+                f"<span>{escape(tr('ui.queue_next_attempt', retry_text=retry_text))}</span>"
+                f"<span>{escape(tr('ui.queue_error', error=error_text or '-'))}</span>"
                 "</li>"
             )
         pending_html = f'<ul class="queue-items">{"".join(item_rows)}</ul>'
     else:
-        pending_html = '<p class="queue-empty">Очередь пуста.</p>'
+        pending_html = f'<p class="queue-empty">{escape(tr("ui.queue_empty"))}</p>'
 
     return f"""
     <section class="queue-panel">
       <div class="queue-head">
-        <h2>Очередь отправки</h2>
-        <p>Сообщений в очереди: {escape(count_text)}</p>
+        <h2>{escape(tr("ui.queue_title"))}</h2>
+        <p>{escape(tr("ui.queue_count", count=count_text))}</p>
       </div>
       <form method="post" action="/clear-queue">
-        <button class="danger-button" type="submit"{disabled}>Очистить очередь</button>
+        <button class="danger-button" type="submit"{disabled}>{escape(tr("ui.clear_queue"))}</button>
       </form>
       {pending_html}
     </section>
@@ -448,11 +460,17 @@ def describe_config_changes(old_config, new_config):
     old_action = old_config.get("LARGE_FILE_ACTION", "send_text_link")
     new_action = new_config.get("LARGE_FILE_ACTION", "send_text_link")
     if old_action != new_action:
+        action_options = get_large_file_action_options()
         changes.append(
             "Large file action changed: "
-            f"{LARGE_FILE_ACTIONS.get(old_action, old_action)} -> "
-            f"{LARGE_FILE_ACTIONS.get(new_action, new_action)}"
+            f"{action_options.get(old_action, old_action)} -> "
+            f"{action_options.get(new_action, new_action)}"
         )
+
+    old_language = normalize_language(old_config.get("LANGUAGE", "ru"))
+    new_language = normalize_language(new_config.get("LANGUAGE", "ru"))
+    if old_language != new_language:
+        changes.append(tr("ui.change_language", old=old_language, new=new_language))
 
     old_catch_up = old_config.get("STARTUP_CATCH_UP_LIMIT", 10)
     new_catch_up = new_config.get("STARTUP_CATCH_UP_LIMIT", 10)
@@ -468,26 +486,36 @@ def describe_config_changes(old_config, new_config):
 
 
 def render_page(config, notice="", error="", form_values=None):
+    selected_language = normalize_language(
+        (form_values or {}).get("language") or config.get("LANGUAGE", "ru")
+    )
+    configure_language(selected_language)
     values = form_values or form_values_from_config(config)
+    values["language"] = selected_language
     action = values.get("large_file_action", "send_text_link")
-    if action not in LARGE_FILE_ACTIONS:
+    if action not in LARGE_FILE_ACTION_KEYS:
         action = "send_text_link"
 
     pending_count = get_pending_count(config)
     pending_items = get_pending_items(config)
-    queue_text = "Очередь: -" if pending_count is None else f"Очередь: {pending_count}"
+    queue_text = (
+        tr("ui.queue_status_unknown")
+        if pending_count is None
+        else tr("ui.queue_status", count=pending_count)
+    )
     notice_html = f'<div class="notice">{escape(notice)}</div>' if notice else ""
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
-    action_select = render_select("large_file_action", action, LARGE_FILE_ACTIONS)
+    action_select = render_select("large_file_action", action, get_large_file_action_options())
+    language_select = render_select("language", selected_language, get_language_options())
     queue_panel_html = render_queue_panel(pending_count, pending_items)
-    ui_log_html = render_log_panel("События UI", read_log_tail(UI_LOG_FILE, max_lines=25))
+    ui_log_html = render_log_panel(tr("ui.events_ui"), read_log_tail(UI_LOG_FILE, max_lines=25))
     bot_log_html = render_log_panel(
-        "Последние события бота",
+        tr("ui.events_bot"),
         read_log_tail(BOT_LOG_FILE, max_lines=35),
     )
 
     return f"""<!doctype html>
-<html lang="ru">
+<html lang="{escape(selected_language)}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -831,7 +859,7 @@ def render_page(config, notice="", error="", form_values=None):
     <header>
       <div>
         <h1>Telerixa</h1>
-        <p class="subtitle">Настройки сохраняются в config.json. Работающий бот подхватит изменения на следующей проверке.</p>
+        <p class="subtitle">{escape(tr("ui.subtitle"))}</p>
       </div>
       <div class="status">UI: {escape(HOST)}:{PORT}<br>{escape(queue_text)}</div>
     </header>
@@ -844,42 +872,48 @@ def render_page(config, notice="", error="", form_values=None):
         <div class="field full">
           <label for="discord_webhook_url">Discord webhook</label>
           <input id="discord_webhook_url" name="discord_webhook_url" type="url" autocomplete="off" value="{escape(values.get("discord_webhook_url", ""))}">
-          <div class="hint">Webhook URL канала или ветки Discord.</div>
+          <div class="hint">{escape(tr("ui.discord_webhook_hint"))}</div>
         </div>
 
         <div class="field full">
-          <label for="telegram_channels">Telegram-каналы</label>
+          <label for="telegram_channels">{escape(tr("ui.telegram_channels"))}</label>
           <textarea id="telegram_channels" name="telegram_channels" spellcheck="false">{escape(values.get("telegram_channels", ""))}</textarea>
-          <div class="hint">Один public username на строку. Можно писать с @ или ссылкой t.me. Допустимы латиница, цифры и _, 5-32 символа.</div>
+          <div class="hint">{escape(tr("ui.telegram_channels_hint"))}</div>
         </div>
 
         <div class="field">
-          <label for="discord_file_limit_mb">Лимит файла, MB</label>
+          <label for="discord_file_limit_mb">{escape(tr("ui.discord_file_limit"))}</label>
           <input id="discord_file_limit_mb" name="discord_file_limit_mb" type="number" min="1" max="500" step="1" value="{escape(values.get("discord_file_limit_mb", ""))}">
-          <div class="hint">Например: 10 без буста, 50 для Tier 2, 95 для Tier 3 с запасом.</div>
+          <div class="hint">{escape(tr("ui.discord_file_limit_hint"))}</div>
         </div>
 
         <div class="field">
-          <label for="large_file_action">Большие видеофайлы</label>
+          <label for="large_file_action">{escape(tr("ui.large_videos"))}</label>
           {action_select}
-          <div class="hint">Что делать, когда медиа превышает выбранный лимит.</div>
+          <div class="hint">{escape(tr("ui.large_videos_hint"))}</div>
         </div>
 
         <div class="field">
-          <label for="startup_catch_up_limit">Хвост после старта</label>
+          <label for="startup_catch_up_limit">{escape(tr("ui.startup_catch_up"))}</label>
           <input id="startup_catch_up_limit" name="startup_catch_up_limit" type="number" min="0" max="500" step="1" value="{escape(values.get("startup_catch_up_limit", ""))}">
-          <div class="hint">Сколько свежих постов догнать после простоя. 0 - не догонять старое.</div>
+          <div class="hint">{escape(tr("ui.startup_catch_up_hint"))}</div>
         </div>
 
         <div class="field">
-          <label for="max_queue_attempts">Лимит retry очереди</label>
+          <label for="max_queue_attempts">{escape(tr("ui.max_queue_attempts"))}</label>
           <input id="max_queue_attempts" name="max_queue_attempts" type="number" min="1" max="200" step="1" value="{escape(values.get("max_queue_attempts", ""))}">
-          <div class="hint">После этого числа неудачных попыток пост удаляется из очереди с логом и alert.</div>
+          <div class="hint">{escape(tr("ui.max_queue_attempts_hint"))}</div>
+        </div>
+
+        <div class="field">
+          <label for="language">{escape(tr("ui.language"))}</label>
+          {language_select}
+          <div class="hint">{escape(tr("ui.language_hint"))}</div>
         </div>
       </div>
 
       <div class="actions">
-        <button type="submit">Сохранить</button>
+        <button type="submit">{escape(tr("ui.save"))}</button>
       </div>
     </form>
 
@@ -929,11 +963,13 @@ class ConfigHandler(BaseHTTPRequestHandler):
         form_values = {
             "discord_webhook_url": form.get("discord_webhook_url", [""])[0].strip(),
             "telegram_channels": form.get("telegram_channels", [""])[0],
+            "language": normalize_language(form.get("language", [config.get("LANGUAGE", "ru")])[0]),
             "discord_file_limit_mb": form.get("discord_file_limit_mb", [""])[0].strip(),
             "large_file_action": form.get("large_file_action", ["send_text_link"])[0],
             "startup_catch_up_limit": form.get("startup_catch_up_limit", ["10"])[0].strip(),
             "max_queue_attempts": form.get("max_queue_attempts", ["24"])[0].strip(),
         }
+        configure_language(form_values["language"])
 
         errors = []
         webhook = form_values["discord_webhook_url"]
@@ -945,29 +981,27 @@ class ConfigHandler(BaseHTTPRequestHandler):
         if invalid_channels:
             invalid_list = ", ".join(invalid_channels[:5])
             if len(invalid_channels) > 5:
-                invalid_list += f" и ещё {len(invalid_channels) - 5}"
+                invalid_list += tr("ui.more_items", count=len(invalid_channels) - 5)
             errors.append(
-                "Некорректные Telegram-каналы: "
-                f"{invalid_list}. Нужен public username: латиница, цифры, _, 5-32 символа."
+                tr("ui.invalid_channels", items=invalid_list)
             )
         if duplicate_channels:
             duplicate_list = ", ".join(duplicate_channels[:5])
             if len(duplicate_channels) > 5:
-                duplicate_list += f" и ещё {len(duplicate_channels) - 5}"
+                duplicate_list += tr("ui.more_items", count=len(duplicate_channels) - 5)
             errors.append(
-                "Повторяющиеся Telegram-каналы: "
-                f"{duplicate_list}. Удали дубли перед сохранением."
+                tr("ui.duplicate_channels", items=duplicate_list)
             )
         if not channels:
-            errors.append("Добавь хотя бы один Telegram-канал.")
+            errors.append(tr("ui.no_channels"))
 
         limit, limit_error = parse_file_limit(form_values["discord_file_limit_mb"])
         if limit_error:
             errors.append(limit_error)
 
         action = form_values["large_file_action"]
-        if action not in LARGE_FILE_ACTIONS:
-            errors.append("Неизвестное действие для больших файлов.")
+        if action not in LARGE_FILE_ACTION_KEYS:
+            errors.append(tr("ui.unknown_large_file_action"))
 
         catch_up_limit, catch_up_error = parse_catch_up_limit(form_values["startup_catch_up_limit"])
         if catch_up_error:
@@ -984,6 +1018,7 @@ class ConfigHandler(BaseHTTPRequestHandler):
             return
 
         new_config = dict(config)
+        new_config["LANGUAGE"] = form_values["language"]
         new_config["DISCORD_WEBHOOK_URL"] = webhook
         new_config["TELEGRAM_CHANNELS"] = channels
         new_config["DISCORD_FILE_LIMIT_MB"] = limit
@@ -1001,7 +1036,7 @@ class ConfigHandler(BaseHTTPRequestHandler):
         else:
             log_event("Settings saved: no changes.")
 
-        self.respond(render_page(new_config, notice="Настройки сохранены. Бот подхватит их на следующей проверке."))
+        self.respond(render_page(new_config, notice=tr("ui.saved_notice")))
 
     def handle_clear_queue(self):
         config = load_config()
@@ -1009,13 +1044,15 @@ class ConfigHandler(BaseHTTPRequestHandler):
         try:
             deleted_count = clear_pending_queue(config)
         except sqlite3.Error as e:
-            error_text = f"Не удалось очистить очередь: {e}"
+            configure_language(config.get("LANGUAGE", "ru"))
+            error_text = tr("ui.clear_queue_failed", error=e)
             log_event(error_text)
             self.respond(render_page(config, error=error_text))
             return
 
         log_event(f"Pending queue cleared: {deleted_count} messages.")
-        self.respond(render_page(config, notice=f"Очередь очищена. Удалено сообщений: {deleted_count}."))
+        configure_language(config.get("LANGUAGE", "ru"))
+        self.respond(render_page(config, notice=tr("ui.queue_cleared", count=deleted_count)))
 
     def log_message(self, format, *args):
         return

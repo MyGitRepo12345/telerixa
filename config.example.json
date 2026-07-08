@@ -6,6 +6,7 @@
   "TELEGRAM_CHANNELS": [
     "example_channel"
   ],
+  "LANGUAGE": "en",
   "CHECK_INTERVAL": 60,
   "MAX_MESSAGE_LENGTH": 2000,
   "TIMEZONE": "Europe/Berlin",

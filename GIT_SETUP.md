@@ -4,13 +4,15 @@
 
 - `telerixa.py`
 - `web_ui.py`
+- `i18n.py`
+- `locales/*.json`
 - `requirements.txt`
 - `run.bat`, `run.sh`, `run_ui.bat`, `run_ui.sh`
 - `deploy_to_deck.bat`, `deploy_remote.sh`
 - `config.example.json`
 - `deploy_config.example.bat`
 - `.gitignore`, `.gitattributes`
-- docs and README files
+- docs, README files, and `CHANGELOG.md`
 
 ## What must stay local
 

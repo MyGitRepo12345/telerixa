@@ -2,7 +2,7 @@
 
 Telerixa пересылает посты из Telegram-каналов в Discord через webhook: текст, фото, видео, альбомы и часть контекста ответов/форвардов.
 
-Текущая версия: `0.1.0`
+Текущая версия: `0.2.0`
 
 ## Возможности
 
@@ -13,6 +13,7 @@ Telerixa пересылает посты из Telegram-каналов в Discord
 - Лимит размера файлов Discord и стратегия для больших видео.
 - Настраиваемый catch-up хвост после простоя.
 - Логи в консоль и в `logs/bot.log`.
+- JSON-локализация с русским и английским каталогами.
 - Автодеплой на Steam Deck по SSH без перетирания runtime-файлов.
 
 ## Установка
@@ -39,6 +40,7 @@ copy config.example.json config.json
 - `TELEGRAM_API_ID`
 - `TELEGRAM_API_HASH`
 - `TELEGRAM_CHANNELS`
+- `LANGUAGE`, например `ru` или `en`
 - `DISCORD_FILE_LIMIT_MB`
 - `LARGE_FILE_ACTION`
 - `STARTUP_CATCH_UP_LIMIT`

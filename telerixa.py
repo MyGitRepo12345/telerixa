@@ -13,10 +13,12 @@ import tempfile
 from io import BytesIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-APP_NAME = "Telerixa"
-__version__ = "0.1.0"
+from i18n import configure_language, normalize_language, tr
 
-# Настройка логирования
+APP_NAME = "Telerixa"
+__version__ = "0.2.0"
+
+# Logging
 LOG_DIR = "logs"
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 
@@ -56,11 +58,12 @@ def setup_logging():
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# ===== КОНФИГУРАЦИЯ ИЗ ФАЙЛА =====
+# ===== FILE-BASED CONFIGURATION =====
 
 CONFIG_FILE = "config.json"
 
 CONFIG_RELOAD_KEYS = (
+    "LANGUAGE",
     "DISCORD_WEBHOOK_URL",
     "DISCORD_ALERT_USER_ID",
     "TELEGRAM_CHANNELS",
@@ -102,7 +105,9 @@ class SendResult:
         return cls(False, error, terminal=True)
 
 
-def as_send_result(value, fallback_error="Отправка вернула False"):
+def as_send_result(value, fallback_error=None):
+    if fallback_error is None:
+        fallback_error = tr("send.false")
     if isinstance(value, SendResult):
         return value
     if value:
@@ -119,11 +124,11 @@ def read_config_file(exit_on_error=False):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
-        logger.error(f"Файл {CONFIG_FILE} не найден! Создай его рядом со скриптом.")
+        logger.error(tr("config.file_missing", file=CONFIG_FILE))
         if exit_on_error:
             sys.exit(1)
     except json.JSONDecodeError:
-        logger.error(f"Ошибка чтения {CONFIG_FILE}. Проверь запятые и кавычки.")
+        logger.error(tr("config.invalid_json", file=CONFIG_FILE))
         if exit_on_error:
             sys.exit(1)
     return None
@@ -131,7 +136,9 @@ def read_config_file(exit_on_error=False):
 
 config = read_config_file(exit_on_error=True)
 
-# Читаем значения из конфига
+# Read values from config.
+LANGUAGE = normalize_language(config.get("LANGUAGE", "ru"))
+configure_language(LANGUAGE)
 DISCORD_WEBHOOK_URL = config.get("DISCORD_WEBHOOK_URL", "")
 DISCORD_ALERT_USER_ID = str(config.get("DISCORD_ALERT_USER_ID", "")).strip()
 TELEGRAM_API_ID = config.get("TELEGRAM_API_ID", 0)
@@ -155,26 +162,23 @@ MAX_QUEUE_ATTEMPTS = max(1, int(config.get("MAX_QUEUE_ATTEMPTS", 24)))
 
 if LARGE_FILE_ACTION not in VALID_LARGE_FILE_ACTIONS:
     logger.warning(
-        f"Неизвестный LARGE_FILE_ACTION={LARGE_FILE_ACTION!r}. "
-        "Используем send_text_link."
+        tr("config.invalid_large_file_action", action=repr(LARGE_FILE_ACTION))
     )
     LARGE_FILE_ACTION = "send_text_link"
 
 if not TELEGRAM_CHANNELS or not DISCORD_WEBHOOK_URL:
-    logger.error("В конфиге отсутствуют обязательные поля: TELEGRAM_CHANNELS или DISCORD_WEBHOOK_URL.")
+    logger.error(tr("config.required_missing"))
     sys.exit(1)
 
 
 def load_timezone(timezone_name):
-    """Загрузить таймзону из конфига, с fallback для Windows без tzdata."""
+    """Load the configured timezone, with a fallback for Windows without tzdata."""
     try:
         return ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError:
         fallback_timezone = datetime.now().astimezone().tzinfo
         logger.warning(
-            f"Таймзона {timezone_name} не найдена. "
-            "Используем локальную таймзону системы. "
-            "Для точной Europe/Berlin можно установить пакет tzdata."
+            tr("config.timezone_not_found", timezone=timezone_name)
         )
         return fallback_timezone
 
@@ -213,6 +217,7 @@ def parse_ts(value, fallback_ts=None):
 
 def normalize_runtime_config(new_config):
     normalized = {
+        "LANGUAGE": normalize_language(new_config.get("LANGUAGE", LANGUAGE)),
         "DISCORD_WEBHOOK_URL": new_config.get("DISCORD_WEBHOOK_URL", DISCORD_WEBHOOK_URL),
         "DISCORD_ALERT_USER_ID": str(new_config.get("DISCORD_ALERT_USER_ID", DISCORD_ALERT_USER_ID)).strip(),
         "TELEGRAM_CHANNELS": new_config.get("TELEGRAM_CHANNELS", TELEGRAM_CHANNELS),
@@ -261,8 +266,7 @@ def normalize_runtime_config(new_config):
 
     if normalized["LARGE_FILE_ACTION"] not in VALID_LARGE_FILE_ACTIONS:
         logger.warning(
-            f"Неизвестный LARGE_FILE_ACTION={normalized['LARGE_FILE_ACTION']!r}. "
-            "Используем send_text_link."
+            tr("config.invalid_large_file_action", action=repr(normalized["LARGE_FILE_ACTION"]))
         )
         normalized["LARGE_FILE_ACTION"] = "send_text_link"
 
@@ -270,6 +274,7 @@ def normalize_runtime_config(new_config):
 
 
 def apply_runtime_config(new_config):
+    global LANGUAGE
     global DISCORD_WEBHOOK_URL
     global DISCORD_ALERT_USER_ID
     global TELEGRAM_CHANNELS
@@ -284,6 +289,7 @@ def apply_runtime_config(new_config):
 
     normalized = normalize_runtime_config(new_config)
     old_values = {
+        "LANGUAGE": LANGUAGE,
         "DISCORD_WEBHOOK_URL": DISCORD_WEBHOOK_URL,
         "DISCORD_ALERT_USER_ID": DISCORD_ALERT_USER_ID,
         "TELEGRAM_CHANNELS": TELEGRAM_CHANNELS,
@@ -296,6 +302,8 @@ def apply_runtime_config(new_config):
         "MAX_QUEUE_ATTEMPTS": MAX_QUEUE_ATTEMPTS,
     }
 
+    LANGUAGE = normalized["LANGUAGE"]
+    configure_language(LANGUAGE)
     DISCORD_WEBHOOK_URL = normalized["DISCORD_WEBHOOK_URL"]
     DISCORD_ALERT_USER_ID = normalized["DISCORD_ALERT_USER_ID"]
     TELEGRAM_CHANNELS = normalized["TELEGRAM_CHANNELS"]
@@ -316,7 +324,7 @@ def apply_runtime_config(new_config):
     ]
 
     if changed_keys:
-        logger.info(f"Настройки обновлены без перезапуска: {', '.join(changed_keys)}")
+        logger.info(tr("config.updated", keys=", ".join(changed_keys)))
 
 
 def reload_config_if_changed():
@@ -325,7 +333,7 @@ def reload_config_if_changed():
     try:
         current_mtime = os.path.getmtime(CONFIG_FILE)
     except OSError as e:
-        logger.warning(f"Не удалось проверить {CONFIG_FILE}: {e}")
+        logger.warning(tr("config.check_failed", file=CONFIG_FILE, error=e))
         return
 
     if current_mtime == CONFIG_MTIME:
@@ -333,7 +341,7 @@ def reload_config_if_changed():
 
     new_config = read_config_file(exit_on_error=False)
     if new_config is None:
-        logger.warning("Оставляем предыдущие рабочие настройки.")
+        logger.warning(tr("config.keep_previous"))
         return
 
     apply_runtime_config(new_config)
@@ -348,7 +356,7 @@ async def sleep_with_config_reload(duration):
         reload_config_if_changed()
         remaining -= step
 
-# ===== ИНИЦИАЛИЗАЦИЯ =====
+# ===== INITIALIZATION =====
 
 telegram_client = TelegramClient(
     "tg_session",
@@ -361,23 +369,23 @@ telegram_client = TelegramClient(
     system_lang_code="en-US",
 )
 
-# Старый файл seen_messages.json используется только для мягкой миграции в SQLite
+# The old seen_messages.json file is used only for a soft SQLite migration.
 SEEN_MESSAGES_FILE = "seen_messages.json"
 
 
 def load_legacy_seen_messages():
-    """Загрузить старый список отправленных сообщений для миграции."""
+    """Load the old sent-message list for migration."""
     try:
         with open(SEEN_MESSAGES_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, list):
                 return data
-            logger.warning(f"Файл {SEEN_MESSAGES_FILE} содержит не список, начинаем с пустой базы.")
+            logger.warning(tr("legacy.seen_not_list", file=SEEN_MESSAGES_FILE))
             return []
     except FileNotFoundError:
         return []
     except json.JSONDecodeError:
-        logger.warning(f"Файл {SEEN_MESSAGES_FILE} поврежден, начинаем с пустой базы.")
+        logger.warning(tr("legacy.seen_broken", file=SEEN_MESSAGES_FILE))
         return []
 
 
@@ -389,7 +397,7 @@ def connect_state_db():
 
 
 def init_state_db():
-    """Создать таблицу состояния каналов, если ее еще нет."""
+    """Create state tables if they do not exist yet."""
     with connect_state_db() as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -475,7 +483,7 @@ def ensure_pending_message_columns(conn):
 
 
 def get_last_seen_id(channel):
-    """Получить последний обработанный message_id канала."""
+    """Return the last processed message_id for a channel."""
     with connect_state_db() as conn:
         row = conn.execute(
             "SELECT last_seen_id FROM channel_state WHERE channel = ?",
@@ -489,7 +497,7 @@ def get_last_seen_id(channel):
 
 
 def set_last_seen_id(channel, message_id):
-    """Сохранить границу обработанных сообщений для канала."""
+    """Save the processed-message boundary for a channel."""
     now = datetime.now(APP_TIMEZONE).isoformat()
     with connect_state_db() as conn:
         conn.execute(
@@ -506,7 +514,7 @@ def set_last_seen_id(channel, message_id):
 
 
 def advance_last_seen_id(channel, message_id):
-    """Сдвинуть границу канала только вперед."""
+    """Move the channel boundary forward only."""
     current_last_seen_id = get_last_seen_id(channel)
     if current_last_seen_id is None or int(message_id) > current_last_seen_id:
         set_last_seen_id(channel, message_id)
@@ -575,8 +583,7 @@ def is_processed_message(channel, message_id):
 
     if status == "queued" and not has_pending_message(channel, message_id, grouped_id):
         logger.warning(
-            f"Канал @{channel}: ID {message_id} помечен как queued, "
-            "но записи в очереди нет. Пробуем обработать заново."
+            tr("processed.queued_without_pending", channel=channel, message_id=message_id)
         )
         return False
 
@@ -723,11 +730,11 @@ def delete_pending_message(channel, message_id):
 
 def log_discarded_message(channel, message_id, reason, attempts, source):
     logger.error("=" * 72)
-    logger.error(f"Сообщение выброшено: {source}")
-    logger.error(f"Пост: @{channel}/{message_id}")
-    logger.error(f"Ссылка: https://t.me/{channel}/{message_id}")
-    logger.error(f"Попыток: {attempts}")
-    logger.error(f"Причина: {reason}")
+    logger.error(tr("discard.source", source=source))
+    logger.error(tr("discard.post", channel=channel, message_id=message_id))
+    logger.error(tr("discard.link", channel=channel, message_id=message_id))
+    logger.error(tr("discard.attempts", attempts=attempts))
+    logger.error(tr("discard.reason", reason=reason))
     logger.error("=" * 72)
 
 
@@ -746,11 +753,13 @@ async def notify_dropped_message(channel, message_id, reason, attempts):
         return
 
     payload = {
-        "content": (
-            f"{get_alert_mention()}WARNING: Telegram post was dropped from retry queue.\n"
-            f"Post: https://t.me/{channel}/{message_id}\n"
-            f"Attempts: `{attempts}`\n"
-            f"Reason: `{str(reason)[:300]}`"
+        "content": tr(
+            "alert.dropped",
+            mention=get_alert_mention(),
+            channel=channel,
+            message_id=message_id,
+            attempts=attempts,
+            reason=str(reason)[:300],
         ),
         "allowed_mentions": {"users": [DISCORD_ALERT_USER_ID]},
     }
@@ -760,9 +769,9 @@ async def notify_dropped_message(channel, message_id, reason, attempts):
         async with aiohttp.ClientSession() as session:
             async with session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=timeout) as response:
                 if response.status not in [200, 204]:
-                    logger.warning(f"Не удалось отправить alert о dropped-сообщении: {response.status}")
+                    logger.warning(tr("alert.dropped_failed_status", status=response.status))
     except Exception as e:
-        logger.warning(f"Не удалось отправить alert о dropped-сообщении: {describe_network_error(e)}")
+        logger.warning(tr("alert.dropped_failed_error", error=describe_network_error(e)))
 
 
 def get_due_pending_messages(limit=None):
@@ -820,7 +829,7 @@ def has_channel_state(channel):
 
 
 def migrate_legacy_seen_messages():
-    """Перенести старый seen_messages.json в SQLite, если SQLite еще пустая."""
+    """Migrate the old seen_messages.json into SQLite when needed."""
     legacy_seen = load_legacy_seen_messages()
     if not legacy_seen:
         return
@@ -848,7 +857,7 @@ def migrate_legacy_seen_messages():
             migrated_channels += 1
 
     if migrated_channels:
-        logger.info(f"Старый seen_messages.json перенесен в SQLite для каналов: {migrated_channels}.")
+        logger.info(tr("legacy.migrated_channels", count=migrated_channels))
 
     if processed_keys:
         now_ts = get_now_ts()
@@ -874,7 +883,7 @@ def migrate_legacy_seen_messages():
             conn.commit()
 
         if inserted:
-            logger.info(f"Старые seen ID добавлены в дедупликацию: {inserted}.")
+            logger.info(tr("legacy.processed_inserted", count=inserted))
 
 
 def all_channels_initialized():
@@ -882,17 +891,17 @@ def all_channels_initialized():
 
 
 def get_post_url(message, channel_name):
-    """Собрать ссылку на публичный пост Telegram."""
+    """Build a public Telegram post URL."""
     return f"https://t.me/{channel_name}/{message.id}"
 
 
 def get_message_time(message):
-    """Вернуть время поста в локальной зоне из конфига."""
+    """Return the post time in the configured local timezone."""
     return get_message_datetime(message).strftime("%d.%m.%Y %H:%M")
 
 
 def get_message_datetime(message):
-    """Вернуть datetime поста в локальной зоне из конфига."""
+    """Return the post datetime in the configured local timezone."""
     try:
         return message.date.astimezone(APP_TIMEZONE)
     except Exception:
@@ -900,7 +909,7 @@ def get_message_datetime(message):
 
 
 def get_forward_info(message):
-    """Вернуть понятное описание источника, если пост является репостом."""
+    """Return a human-readable source description for forwarded posts."""
     forward = getattr(message, "forward", None)
     if not forward:
         return None
@@ -912,14 +921,14 @@ def get_forward_info(message):
         title = getattr(chat, "title", None) or getattr(chat, "username", None)
         username = getattr(chat, "username", None)
         if username:
-            return f"Репост из [{title}](https://t.me/{username})"
+            return tr("telegram.forward_from_channel_link", title=title, username=username)
         if title:
-            return f"Репост из {title}"
+            return tr("telegram.forward_from_channel", title=title)
 
     if from_name:
-        return f"Репост от {from_name}"
+        return tr("telegram.forward_from_user", name=from_name)
 
-    return "Репост из другого Telegram-источника"
+    return tr("telegram.forward_from_unknown")
 
 
 def trim_context_text(text, limit=700):
@@ -953,7 +962,7 @@ def format_blockquote(text):
 
 
 async def get_reply_info(message):
-    """Вернуть описание Telegram reply/quote, если пост отвечает на другой пост."""
+    """Return Telegram reply/quote context when a post replies to another post."""
     reply_to = getattr(message, "reply_to", None)
     if not reply_to:
         return None
@@ -962,7 +971,7 @@ async def get_reply_info(message):
     try:
         reply_message = await message.get_reply_message()
     except Exception as e:
-        logger.warning(f"Не удалось получить reply/quote для поста {message.id}: {e}")
+        logger.warning(tr("telegram.reply_fetch_failed", message_id=message.id, error=e))
 
     if not reply_message:
         reply_peer = getattr(reply_to, "reply_to_peer_id", None)
@@ -972,7 +981,7 @@ async def get_reply_info(message):
                 reply_message = await telegram_client.get_messages(reply_peer, ids=reply_id)
             except Exception as e:
                 logger.warning(
-                    f"Не удалось получить cross-channel reply/quote для поста {message.id}: {e}"
+                    tr("telegram.cross_reply_fetch_failed", message_id=message.id, error=e)
                 )
 
     chat = getattr(reply_message, "chat", None) if reply_message else None
@@ -981,15 +990,20 @@ async def get_reply_info(message):
         getattr(chat, "title", None)
         or getattr(chat, "username", None)
         or getattr(sender, "first_name", None)
-        or "другой Telegram-пост"
+        or tr("telegram.reply_unknown_title")
     )
     title = repair_mojibake(title)
     username = getattr(chat, "username", None)
 
     if username and reply_message:
-        header = f"Ответ на [{title}](https://t.me/{username}/{reply_message.id})"
+        header = tr(
+            "telegram.reply_to_link",
+            title=title,
+            username=username,
+            message_id=reply_message.id,
+        )
     else:
-        header = f"Ответ на {title}"
+        header = tr("telegram.reply_to", title=title)
 
     reply_text = (
         getattr(reply_to, "quote_text", None)
@@ -1003,7 +1017,7 @@ async def get_reply_info(message):
 
 
 def split_text(text, limit):
-    """Разбить длинный текст без грубого обрыва посреди абзаца."""
+    """Split long text without cutting through paragraphs when possible."""
     if not text:
         return []
 
@@ -1058,9 +1072,9 @@ def select_album_text_message(album_messages, fallback_message):
 
 
 async def build_message_text(telegram_message, channel_name, text_message=None):
-    """Собрать текст поста с метаданными и ссылкой на Telegram."""
+    """Build post text with metadata and Telegram link."""
     source_message = text_message or telegram_message
-    lines = [f"Пост в Telegram: {get_post_url(source_message, channel_name)}"]
+    lines = [tr("telegram.post_link", url=get_post_url(source_message, channel_name))]
     forward_info = get_forward_info(source_message) or get_forward_info(telegram_message)
 
     if forward_info:
@@ -1081,7 +1095,7 @@ async def post_json(session, payload):
     async with session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=timeout) as response:
         if response.status not in [200, 204]:
             error = f"Discord webhook error {response.status}"
-            logger.error(f"Ошибка webhook: {response.status}")
+            logger.error(tr("discord.webhook_error", status=response.status))
             if response.status in (400, 413):
                 return SendResult.terminal_failure(error)
             return SendResult.retry(error)
@@ -1092,10 +1106,7 @@ def describe_network_error(error):
     error_text = str(error)
     lower_error = error_text.lower()
     if "name or service not known" in lower_error or "getaddrinfo failed" in lower_error:
-        return (
-            "DNS не смог найти discord.com. Проверь интернет/DNS на SteamOS. "
-            f"Детали: {error_text}"
-        )
+        return tr("network.dns_discord", error=error_text)
     return error_text
 
 
@@ -1112,10 +1123,14 @@ async def send_text_chunks(session, chunks, channel_name, message_time, start_pa
                     "color": 3447003,
                     "timestamp": message_time.isoformat(),
                     "footer": {
-                        "text": f"Из Telegram канала @{channel_name}{part_suffix}",
+                        "text": tr(
+                            "telegram.footer_from_channel",
+                            channel=channel_name,
+                            part_suffix=part_suffix,
+                        ),
                     },
                     "author": {
-                        "name": f"Новость из @{channel_name}",
+                        "name": tr("telegram.author_news_from_channel", channel=channel_name),
                     },
                 }
             ]
@@ -1138,7 +1153,7 @@ def is_forwardable_message(message):
 
 
 async def collect_startup_tail(entity, last_seen_id, limit):
-    """Собрать последние limit постов после last_seen_id, не опираясь на плотность ID."""
+    """Collect the latest limit posts after last_seen_id without assuming dense IDs."""
     if limit <= 0:
         return [], False
 
@@ -1182,23 +1197,30 @@ async def get_album_message_ids(channel_name, message):
         if album_ids:
             return album_ids
     except Exception as e:
-        logger.warning(f"Не удалось получить ID альбома @{channel_name}/{message.id}: {e}")
+        logger.warning(
+            tr(
+                "media.album_ids_failed",
+                channel=channel_name,
+                message_id=message.id,
+                error=e,
+            )
+        )
 
     return [message.id]
 
 
 async def get_processed_until_id(channel_name, message):
-    """Вернуть верхний Telegram message_id, который покрывает сообщение или альбом."""
+    """Return the highest Telegram message_id covered by a message or album."""
     return max(await get_album_message_ids(channel_name, message))
 
 
 async def catch_up_channels_on_start():
-    """На старте догнать только небольшой свежий хвост, глубокий backlog пропустить."""
+    """Catch up only a small fresh tail on startup and skip deep backlog."""
     if not telegram_client.is_connected():
         await telegram_client.connect()
 
     logger.info(
-        f"Стартовая синхронизация: догоняем до {STARTUP_CATCH_UP_LIMIT} свежих постов на канал."
+        tr("startup.catch_up_begin", limit=STARTUP_CATCH_UP_LIMIT)
     )
 
     for channel in TELEGRAM_CHANNELS:
@@ -1210,14 +1232,18 @@ async def catch_up_channels_on_start():
             if last_seen_id is None:
                 set_last_seen_id(channel, latest_message_id)
                 logger.info(
-                    f"Канал @{channel}: создана граница ID {latest_message_id}."
+                    tr("startup.boundary_created", channel=channel, message_id=latest_message_id)
                 )
                 continue
 
             if latest_message_id <= last_seen_id:
                 logger.info(
-                    f"Канал @{channel}: last_seen={last_seen_id}, latest={latest_message_id}. "
-                    "Старого хвоста нет."
+                    tr(
+                        "startup.no_backlog",
+                        channel=channel,
+                        last_seen=last_seen_id,
+                        latest=latest_message_id,
+                    )
                 )
                 continue
 
@@ -1225,8 +1251,13 @@ async def catch_up_channels_on_start():
                 skipped_count = latest_message_id - last_seen_id
                 set_last_seen_id(channel, latest_message_id)
                 logger.info(
-                    f"Канал @{channel}: last_seen={last_seen_id}, latest={latest_message_id}. "
-                    f"На старте пропущено старых ID: {skipped_count}."
+                    tr(
+                        "startup.skipped_old_ids",
+                        channel=channel,
+                        last_seen=last_seen_id,
+                        latest=latest_message_id,
+                        count=skipped_count,
+                    )
                 )
                 continue
 
@@ -1238,7 +1269,7 @@ async def catch_up_channels_on_start():
 
             if not to_process:
                 advance_last_seen_id(channel, latest_message_id)
-                logger.info(f"Канал @{channel}: в стартовом хвосте нет текстовых/медиа постов.")
+                logger.info(tr("startup.no_forwardable_tail", channel=channel))
                 continue
 
             startup_boundary_id = last_seen_id
@@ -1246,42 +1277,62 @@ async def catch_up_channels_on_start():
                 startup_boundary_id = max(last_seen_id, min(message.id for message in to_process) - 1)
                 set_last_seen_id(channel, startup_boundary_id)
                 logger.info(
-                    f"Канал @{channel}: last_seen={last_seen_id}, latest={latest_message_id}. "
-                    f"Старый backlog пропущен до ID {startup_boundary_id}; "
-                    f"догоняем последние {len(to_process)} постов."
+                    tr(
+                        "startup.backlog_skipped",
+                        channel=channel,
+                        last_seen=last_seen_id,
+                        latest=latest_message_id,
+                        boundary=startup_boundary_id,
+                        count=len(to_process),
+                    )
                 )
 
             logger.info(
-                f"Канал @{channel}: стартовый хвост к обработке: {len(to_process)} "
-                f"(ID > {startup_boundary_id}, latest={latest_message_id})."
+                tr(
+                    "startup.tail_to_process",
+                    channel=channel,
+                    count=len(to_process),
+                    boundary=startup_boundary_id,
+                    latest=latest_message_id,
+                )
             )
             sent_count, queued_count, skipped_processed, last_processed_id = (
                 await process_messages_for_channel(channel, to_process, startup_boundary_id)
             )
             advance_last_seen_id(channel, max(last_processed_id, latest_message_id))
             logger.info(
-                f"Канал @{channel}: стартовый хвост завершен, отправлено {sent_count}, "
-                f"в очередь {queued_count}, уже обработано {skipped_processed}, "
-                f"граница {max(last_processed_id, latest_message_id)}."
+                tr(
+                    "startup.tail_done",
+                    channel=channel,
+                    sent=sent_count,
+                    queued=queued_count,
+                    skipped=skipped_processed,
+                    boundary=max(last_processed_id, latest_message_id),
+                )
             )
         except Exception as e:
-            logger.error(f"Канал @{channel}: ошибка стартовой синхронизации: {e}")
+            logger.error(tr("startup.channel_error", channel=channel, error=e))
 
 
 async def process_pending_messages():
-    """Повторить отправку сообщений, которые ранее не дошли до Discord."""
+    """Retry messages that previously did not reach Discord."""
     pending_messages = get_due_pending_messages()
     if not pending_messages:
         pending_count, due_count, next_retry_ts = get_pending_retry_status()
         if pending_count:
             retry_delay = 0
-            retry_text = "неизвестно"
+            retry_text = tr("queue.retry_unknown")
             if next_retry_ts is not None:
                 retry_delay = max(0, int(float(next_retry_ts) - get_now_ts()))
                 retry_text = format_ts(next_retry_ts)
             logger.info(
-                f"Очередь: ожидают retry {pending_count}, "
-                f"готовы сейчас {due_count}, ближайшая попытка через {retry_delay} сек ({retry_text})."
+                tr(
+                    "queue.waiting",
+                    pending=pending_count,
+                    due=due_count,
+                    delay=retry_delay,
+                    retry_at=retry_text,
+                )
             )
         return 0
 
@@ -1289,7 +1340,7 @@ async def process_pending_messages():
         await telegram_client.connect()
 
     delivered_count = 0
-    logger.info(f"Пробуем отправить сообщения из очереди: {len(pending_messages)}")
+    logger.info(tr("queue.trying", count=len(pending_messages)))
 
     for channel, message_id, grouped_id, attempts, last_error in pending_messages:
         try:
@@ -1298,14 +1349,14 @@ async def process_pending_messages():
 
             if not message or not (message.text or message.media):
                 logger.warning(
-                    f"Сообщение @{channel}/{message_id} больше недоступно. Удаляем из очереди."
+                    tr("queue.message_unavailable", channel=channel, message_id=message_id)
                 )
                 delete_pending_message(channel, message_id)
                 continue
 
             send_result = as_send_result(
                 await send_to_discord(message, channel),
-                "Повторная отправка вернула False",
+                tr("send.retry_false"),
             )
             if send_result:
                 album_ids = await get_album_message_ids(channel, message)
@@ -1317,44 +1368,67 @@ async def process_pending_messages():
                 delete_pending_message(channel, message_id)
                 delivered_count += 1
                 logger.info(
-                    f"Сообщение @{channel}/{message_id} доставлено из очереди. "
-                    f"Граница канала сдвинута до {processed_until_id}."
+                    tr(
+                        "queue.delivered",
+                        channel=channel,
+                        message_id=message_id,
+                        boundary=processed_until_id,
+                    )
                 )
             else:
-                error_text = send_result.error or "Повторная отправка вернула False"
+                error_text = send_result.error or tr("send.retry_false")
                 attempts_after = mark_pending_failed(channel, message_id, error_text)
                 if send_result.terminal or attempts_after >= MAX_QUEUE_ATTEMPTS:
                     album_ids = await get_album_message_ids(channel, message)
                     reason = (
-                        f"terminal error: {error_text}"
+                        tr("queue.terminal_reason", error=error_text)
                         if send_result.terminal
-                        else f"max attempts reached ({MAX_QUEUE_ATTEMPTS}): {error_text}"
+                        else tr(
+                            "queue.max_attempts_reason",
+                            max_attempts=MAX_QUEUE_ATTEMPTS,
+                            error=error_text,
+                        )
                     )
                     drop_pending_message(channel, message_id, grouped_id or message.grouped_id, reason, attempts_after, album_ids)
                     await notify_dropped_message(channel, message_id, reason, attempts_after)
                 else:
                     logger.warning(
-                        f"Сообщение @{channel}/{message_id} осталось в очереди. "
-                        f"Попыток было: {attempts_after}/{MAX_QUEUE_ATTEMPTS}. "
-                        f"Причина: {error_text}"
+                        tr(
+                            "queue.kept",
+                            channel=channel,
+                            message_id=message_id,
+                            attempts=attempts_after,
+                            max_attempts=MAX_QUEUE_ATTEMPTS,
+                            reason=error_text,
+                        )
                     )
         except Exception as e:
             error_text = describe_network_error(e)
             attempts_after = mark_pending_failed(channel, message_id, error_text)
             if attempts_after >= MAX_QUEUE_ATTEMPTS:
-                reason = f"max attempts reached ({MAX_QUEUE_ATTEMPTS}): {error_text}"
+                reason = tr(
+                    "queue.max_attempts_reason",
+                    max_attempts=MAX_QUEUE_ATTEMPTS,
+                    error=error_text,
+                )
                 drop_pending_message(channel, message_id, grouped_id, reason, attempts_after)
                 await notify_dropped_message(channel, message_id, reason, attempts_after)
             else:
                 logger.warning(
-                    f"Не удалось отправить @{channel}/{message_id} из очереди: {error_text}. "
-                    f"Попыток было: {attempts_after}/{MAX_QUEUE_ATTEMPTS}."
+                    tr(
+                        "queue.send_failed",
+                        channel=channel,
+                        message_id=message_id,
+                        reason=error_text,
+                        attempts=attempts_after,
+                        max_attempts=MAX_QUEUE_ATTEMPTS,
+                    )
                 )
 
     remaining_count = get_pending_count()
     if delivered_count or remaining_count:
         logger.info(
-            f"Очередь: доставлено {delivered_count}, осталось {remaining_count}."
+            tr("queue.summary", delivered=delivered_count, remaining=remaining_count)
         )
 
     return delivered_count
@@ -1372,7 +1446,7 @@ async def process_messages_for_channel(channel, messages, last_seen_id):
             skipped_processed += 1
             last_processed_id = max(last_processed_id, message.id)
             advance_last_seen_id(channel, last_processed_id)
-            logger.info(f"Канал @{channel}: ID {message.id} уже обработан, пропускаем.")
+            logger.info(tr("channel.already_processed", channel=channel, message_id=message.id))
             continue
 
         if message.grouped_id:
@@ -1381,7 +1455,7 @@ async def process_messages_for_channel(channel, messages, last_seen_id):
 
             send_result = as_send_result(
                 await send_to_discord(message, channel),
-                "Первичная отправка альбома не удалась",
+                tr("send.initial_album_failed"),
             )
             already_sent_grouped_ids.add(message.grouped_id)
             album_ids = await get_album_message_ids(channel, message)
@@ -1394,11 +1468,15 @@ async def process_messages_for_channel(channel, messages, last_seen_id):
                         mark_processed_message(channel, album_message_id, message.grouped_id, "sent")
                 total_sent += 1
                 logger.info(
-                    f"Канал @{channel}: альбом ID {message.id} обработан, "
-                    f"граница {last_processed_id}."
+                    tr(
+                        "channel.album_processed",
+                        channel=channel,
+                        message_id=message.id,
+                        boundary=last_processed_id,
+                    )
                 )
             elif send_result.terminal:
-                reason = send_result.error or "Первичная отправка альбома завершилась terminal error"
+                reason = send_result.error or tr("send.initial_album_terminal")
                 if album_ids:
                     last_processed_id = max(last_processed_id, max(album_ids))
                     advance_last_seen_id(channel, last_processed_id)
@@ -1407,14 +1485,19 @@ async def process_messages_for_channel(channel, messages, last_seen_id):
                 log_discarded_message(channel, message.id, reason, 1, "initial terminal error")
                 await notify_dropped_message(channel, message.id, reason, 1)
                 logger.error(
-                    f"Канал @{channel}: альбом ID {message.id} не добавлен в очередь из-за terminal error: {reason}"
+                    tr(
+                        "channel.album_terminal_not_queued",
+                        channel=channel,
+                        message_id=message.id,
+                        reason=reason,
+                    )
                 )
             else:
                 add_pending_message(
                     channel,
                     message.id,
                     message.grouped_id,
-                    send_result.error or "Первичная отправка альбома не удалась",
+                    send_result.error or tr("send.initial_album_failed"),
                 )
                 if album_ids:
                     last_processed_id = max(last_processed_id, max(album_ids))
@@ -1422,12 +1505,12 @@ async def process_messages_for_channel(channel, messages, last_seen_id):
                     for album_message_id in album_ids:
                         mark_processed_message(channel, album_message_id, message.grouped_id, "queued")
                 queued_count += 1
-                logger.warning(f"Канал @{channel}: альбом ID {message.id} добавлен в очередь.")
+                logger.warning(tr("channel.album_queued", channel=channel, message_id=message.id))
             continue
 
         send_result = as_send_result(
             await send_to_discord(message, channel),
-            "Первичная отправка сообщения не удалась",
+            tr("send.initial_message_failed"),
         )
         if send_result:
             last_processed_id = max(last_processed_id, message.id)
@@ -1435,35 +1518,43 @@ async def process_messages_for_channel(channel, messages, last_seen_id):
             mark_processed_message(channel, message.id, None, "sent")
             total_sent += 1
             logger.info(
-                f"Канал @{channel}: сообщение ID {message.id} обработано, "
-                f"граница {last_processed_id}."
+                tr(
+                    "channel.message_processed",
+                    channel=channel,
+                    message_id=message.id,
+                    boundary=last_processed_id,
+                )
             )
         elif send_result.terminal:
-            reason = send_result.error or "Первичная отправка сообщения завершилась terminal error"
+            reason = send_result.error or tr("send.initial_message_terminal")
             last_processed_id = max(last_processed_id, message.id)
             advance_last_seen_id(channel, last_processed_id)
             mark_processed_message(channel, message.id, None, "failed")
             log_discarded_message(channel, message.id, reason, 1, "initial terminal error")
             await notify_dropped_message(channel, message.id, reason, 1)
             logger.error(
-                f"Канал @{channel}: сообщение ID {message.id} не добавлено в очередь "
-                f"из-за terminal error: {reason}"
+                tr(
+                    "channel.message_terminal_not_queued",
+                    channel=channel,
+                    message_id=message.id,
+                    reason=reason,
+                )
             )
         else:
-            add_pending_message(channel, message.id, None, send_result.error or "Первичная отправка сообщения не удалась")
+            add_pending_message(channel, message.id, None, send_result.error or tr("send.initial_message_failed"))
             last_processed_id = max(last_processed_id, message.id)
             advance_last_seen_id(channel, last_processed_id)
             mark_processed_message(channel, message.id, None, "queued")
             queued_count += 1
-            logger.warning(f"Канал @{channel}: сообщение ID {message.id} добавлено в очередь.")
+            logger.warning(tr("channel.message_queued", channel=channel, message_id=message.id))
 
     return total_sent, queued_count, skipped_processed, last_processed_id
 
 
-# ===== ОСНОВНАЯ ФУНКЦИЯ: ПРОВЕРКА НОВОСТЕЙ =====
+# ===== TELEGRAM NEWS CHECK =====
 
 async def check_telegram_news():
-    """Проверяет новые сообщения в каналах."""
+    """Check channels for new messages."""
     try:
         if not telegram_client.is_connected():
             await telegram_client.connect()
@@ -1474,10 +1565,10 @@ async def check_telegram_news():
             try:
                 entity = await telegram_client.get_entity(f"@{channel}")
             except ValueError:
-                logger.error(f"Канал @{channel} не найден!")
+                logger.error(tr("channel.not_found", channel=channel))
                 continue
             except Exception as e:
-                logger.error(f"Ошибка при получении канала @{channel}: {e}")
+                logger.error(tr("channel.fetch_error", channel=channel, error=e))
                 continue
 
             last_seen_id = get_last_seen_id(channel)
@@ -1485,15 +1576,20 @@ async def check_telegram_news():
 
             if last_seen_id is None:
                 set_last_seen_id(channel, latest_message_id)
-                logger.info(f"Канал @{channel}: зафиксирована стартовая граница ID {latest_message_id}.")
+                logger.info(tr("channel.initial_boundary", channel=channel, message_id=latest_message_id))
                 continue
 
             logger.info(
-                f"Канал @{channel}: проверка, last_seen={last_seen_id}, latest={latest_message_id}."
+                tr(
+                    "channel.checking",
+                    channel=channel,
+                    last_seen=last_seen_id,
+                    latest=latest_message_id,
+                )
             )
 
             if latest_message_id <= last_seen_id:
-                logger.info(f"Канал @{channel}: новых постов нет.")
+                logger.info(tr("channel.no_new_posts", channel=channel))
                 continue
 
             to_process = []
@@ -1502,10 +1598,10 @@ async def check_telegram_news():
                     to_process.append(message)
 
             if not to_process:
-                logger.info(f"Канал @{channel}: новых текстовых/медиа постов нет.")
+                logger.info(tr("channel.no_forwardable_posts", channel=channel))
                 continue
 
-            logger.info(f"Канал @{channel}: найдено кандидатов к обработке: {len(to_process)}.")
+            logger.info(tr("channel.candidates_found", channel=channel, count=len(to_process)))
 
             sent_count, queued_this_channel, skipped_processed, last_processed_id = (
                 await process_messages_for_channel(channel, to_process, last_seen_id)
@@ -1516,27 +1612,26 @@ async def check_telegram_news():
                 advance_last_seen_id(channel, last_processed_id)
 
             if queued_this_channel:
-                logger.info(f"Канал @{channel}: добавлено в очередь {queued_this_channel}.")
+                logger.info(tr("channel.queued_count", channel=channel, count=queued_this_channel))
             if skipped_processed:
-                logger.info(f"Канал @{channel}: уже обработанных пропущено {skipped_processed}.")
+                logger.info(tr("channel.skipped_processed", channel=channel, count=skipped_processed))
 
         current_time = datetime.now().strftime("%H:%M:%S")
         if total_sent_this_turn > 0:
             logger.info(
-                f"[{current_time}] Проверил все каналы. "
-                f"Найдено и отправлено новых публикаций: {total_sent_this_turn}"
+                tr("channel.all_checked_with_sent", time=current_time, count=total_sent_this_turn)
             )
         else:
-            logger.info(f"[{current_time}] Проверил все каналы. Новых сообщений нет.")
+            logger.info(tr("channel.all_checked_empty", time=current_time))
 
     except Exception as e:
-        logger.error(f"Ошибка при проверке Telegram: {e}")
+        logger.error(tr("channel.check_error", error=e))
 
 
-# ===== ОТПРАВКА В DISCORD =====
+# ===== DISCORD DELIVERY =====
 
 async def send_to_discord(telegram_message, channel_name):
-    """Отправляет сообщение и медиа из Telegram в Discord через webhook."""
+    """Send Telegram message text and media to Discord via webhook."""
     temp_files = []
     temp_dirs = []
 
@@ -1571,15 +1666,15 @@ async def send_to_discord(telegram_message, channel_name):
                                 media_files.append(file_path)
                             else:
                                 media_download_failed = True
-                                logger.warning("Telegram не вернул путь к медиа из альбома.")
+                                logger.warning(tr("media.album_path_missing"))
                         except Exception as e:
                             media_download_failed = True
-                            logger.warning(f"Не удалось скачать медиа из альбома: {e}")
+                            logger.warning(tr("media.album_download_failed", error=e))
                 if not media_files:
                     media_download_failed = True
             except Exception as e:
                 media_download_failed = True
-                logger.error(f"Ошибка при обработке альбома: {e}")
+                logger.error(tr("media.album_processing_failed", error=e))
 
         elif telegram_message.media:
             try:
@@ -1591,14 +1686,14 @@ async def send_to_discord(telegram_message, channel_name):
                     media_files.append(file_path)
                 else:
                     media_download_failed = True
-                    logger.warning("Telegram не вернул путь к медиа.")
+                    logger.warning(tr("media.path_missing"))
             except Exception as e:
                 media_download_failed = True
-                logger.error(f"Ошибка при скачивании медиа: {e}")
+                logger.error(tr("media.download_failed", error=e))
 
         if media_download_failed:
-            logger.warning("Медиа скачалось не полностью. Сообщение будет повторено через очередь.")
-            return SendResult.retry("Telegram media download failed")
+            logger.warning(tr("media.partial_download"))
+            return SendResult.retry(tr("send.media_download_failed"))
 
         text = await build_message_text(telegram_message, channel_name, text_message)
         text_chunks = split_text(text, MAX_MESSAGE_LENGTH)
@@ -1616,10 +1711,14 @@ async def send_to_discord(telegram_message, channel_name):
                             "color": 3447003,
                             "timestamp": message_time.isoformat(),
                             "footer": {
-                                "text": f"Из Telegram канала @{channel_name}",
+                                "text": tr(
+                                    "telegram.footer_from_channel",
+                                    channel=channel_name,
+                                    part_suffix="",
+                                ),
                             },
                             "author": {
-                                "name": f"Медиа из @{channel_name}",
+                                "name": tr("telegram.author_media_from_channel", channel=channel_name),
                             },
                         }
                     ]
@@ -1643,13 +1742,19 @@ async def send_to_discord(telegram_message, channel_name):
                         skipped_large_files.append(file_path)
                         if LARGE_FILE_ACTION == "try_send_then_text":
                             logger.warning(
-                                f"Файл {file_path} больше {DISCORD_FILE_LIMIT_MB} MB, "
-                                "пробуем отправить как есть."
+                                tr(
+                                    "media.file_too_large_try",
+                                    file_path=file_path,
+                                    limit=DISCORD_FILE_LIMIT_MB,
+                                )
                             )
                         else:
                             logger.warning(
-                                f"Файл {file_path} больше {DISCORD_FILE_LIMIT_MB} MB, "
-                                "не прикрепляем."
+                                tr(
+                                    "media.file_too_large_skip_attach",
+                                    file_path=file_path,
+                                    limit=DISCORD_FILE_LIMIT_MB,
+                                )
                             )
                             continue
 
@@ -1666,36 +1771,33 @@ async def send_to_discord(telegram_message, channel_name):
                 if not has_valid_files:
                     if skipped_large_files and LARGE_FILE_ACTION == "send_text_link":
                         logger.warning(
-                            "Все медиа больше лимита. Отправляем текст поста со ссылкой на Telegram."
+                            tr("media.all_large_send_text_link")
                         )
                         if text_chunks:
                             return await send_text_chunks(session, text_chunks, channel_name, message_time)
                         return SendResult.success()
 
                     if skipped_large_files and LARGE_FILE_ACTION == "skip_post":
-                        logger.warning("Все медиа больше лимита. Пропускаем пост и двигаемся дальше.")
+                        logger.warning(tr("media.all_large_skip_post"))
                         return SendResult.success()
 
-                    logger.warning("Нет файлов, которые можно отправить в Discord.")
-                    return SendResult.retry("No valid media files to send")
+                    logger.warning(tr("media.no_files_to_send"))
+                    return SendResult.retry(tr("send.no_valid_media"))
 
                 try:
                     timeout = aiohttp.ClientTimeout(total=60)
                     async with session.post(DISCORD_WEBHOOK_URL, data=form_data, timeout=timeout) as response:
                         if response.status not in [200, 204]:
                             error = f"Discord webhook media upload error {response.status}"
-                            logger.error(f"Ошибка webhook при отправке медиа: {response.status}")
+                            logger.error(tr("discord.media_upload_error", status=response.status))
                             if response.status == 413:
                                 if LARGE_FILE_ACTION == "skip_post":
                                     logger.warning(
-                                        "Discord вернул 413 Payload Too Large. "
-                                        "По настройке skip_post пропускаем пост и двигаемся дальше."
+                                        tr("media.discord_413_skip")
                                     )
                                     return SendResult.success()
                                 logger.warning(
-                                    "Discord вернул 413 Payload Too Large. "
-                                    f"Текущий лимит в конфиге: {DISCORD_FILE_LIMIT_MB} MB. "
-                                    "Отправляем текст поста со ссылкой на Telegram."
+                                    tr("media.discord_413_text_link", limit=DISCORD_FILE_LIMIT_MB)
                                 )
                                 if text_chunks:
                                     return await send_text_chunks(session, text_chunks, channel_name, message_time)
@@ -1715,14 +1817,14 @@ async def send_to_discord(telegram_message, channel_name):
                     return SendResult.success()
                 except Exception as e:
                     error = describe_network_error(e)
-                    logger.error(f"Ошибка при отправке данных в Discord: {error}")
+                    logger.error(tr("media.discord_send_failed", error=error))
                     return SendResult.retry(error)
 
-            return SendResult.retry("Nothing to send")
+            return SendResult.retry(tr("send.nothing_to_send"))
 
     except Exception as e:
         error = describe_network_error(e)
-        logger.error(f"Ошибка при отправке сообщения в Discord: {error}")
+        logger.error(tr("media.message_send_failed", error=error))
         return SendResult.retry(error)
 
     finally:
@@ -1743,43 +1845,43 @@ async def send_to_discord(telegram_message, channel_name):
                 pass
 
 
-# ===== ОСНОВНОЙ ЦИКЛ =====
+# ===== MAIN LOOP =====
 
 async def main():
-    logger.info(f"Стартуем {APP_NAME} v{__version__}")
-    logger.info(f"Каналы Telegram: {', '.join(TELEGRAM_CHANNELS)}")
-    logger.info(f"Проверка каждые {CHECK_INTERVAL} секунд")
+    logger.info(tr("app.starting", app_name=APP_NAME, version=__version__))
+    logger.info(tr("app.telegram_channels", channels=", ".join(TELEGRAM_CHANNELS)))
+    logger.info(tr("app.check_interval", seconds=CHECK_INTERVAL))
 
-    logger.info("Подключение к серверам Telegram...")
+    logger.info(tr("app.connecting_telegram"))
 
     try:
         if os.path.exists("tg_session.session"):
-            logger.info("Найдена сохраненная сессия, используем ее...")
+            logger.info(tr("app.saved_session_found"))
             try:
                 await telegram_client.connect()
                 if await telegram_client.is_user_authorized():
-                    logger.info("Авторизация успешна через сохраненную сессию!")
+                    logger.info(tr("app.saved_session_authorized"))
                 else:
-                    logger.info("Сессия невалидна, требуется повторная авторизация.")
+                    logger.info(tr("app.saved_session_invalid"))
                     await telegram_client.start()
             except Exception as e:
-                logger.error(f"Ошибка при использовании сессии: {e}")
+                logger.error(tr("app.saved_session_error", error=e))
                 try:
                     os.remove("tg_session.session")
                 except OSError:
                     pass
                 await telegram_client.start()
         else:
-            logger.info("Нет сохраненной сессии, требуется первая авторизация.")
+            logger.info(tr("app.no_saved_session"))
             await telegram_client.start()
 
         init_state_db()
         migrate_legacy_seen_messages()
 
         await catch_up_channels_on_start()
-        logger.info("Стартовая синхронизация завершена. Отслеживаем новые посты.")
+        logger.info(tr("app.startup_sync_done"))
 
-        logger.info("Форвард запущен! Нажми Ctrl+C для остановки.")
+        logger.info(tr("app.forwarder_running"))
         print("-" * 50)
 
         retry_count = 0
@@ -1798,14 +1900,14 @@ async def main():
                     retry_count += 1
                     await sleep_with_config_reload(min(5 * retry_count, 30))
                 else:
-                    logger.error(f"Ошибка в основном цикле: {e}")
+                    logger.error(tr("app.main_loop_error", error=e))
                     await sleep_with_config_reload(CHECK_INTERVAL)
     except Exception as e:
-        logger.error(f"Ошибка при запуске Telegram клиента: {e}")
+        logger.error(tr("app.telegram_start_error", error=e))
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Форвард остановлен пользователем.")
+        logger.info(tr("app.stopped_by_user"))
