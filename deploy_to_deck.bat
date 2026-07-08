@@ -60,6 +60,13 @@ for %%F in (locales\en.json locales\ru.json) do (
     )
 )
 
+for %%F in (telerixa_core\__init__.py telerixa_core\constants.py telerixa_core\logging_setup.py telerixa_core\models.py) do (
+    if not exist "%%F" (
+        echo ERROR: local file is missing: %%F
+        exit /b 1
+    )
+)
+
 echo Validating remote folder...
 ssh %DECK_USER%@%DECK_HOST% "test -d '%REMOTE_DIR%' && test -f '%REMOTE_DIR%/config.json'"
 if errorlevel 1 (
@@ -79,7 +86,7 @@ if errorlevel 1 (
 )
 
 echo Uploading code files...
-scp -r telerixa.py i18n.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh locales %DECK_USER%@%DECK_HOST%:%REMOTE_TMP%/
+scp -r telerixa.py i18n.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh locales telerixa_core %DECK_USER%@%DECK_HOST%:%REMOTE_TMP%/
 if errorlevel 1 (
     echo ERROR: Upload failed.
     exit /b 1

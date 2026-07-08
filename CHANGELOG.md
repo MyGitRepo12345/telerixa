@@ -8,6 +8,13 @@ This project follows semantic versioning while it is pre-1.0:
 - Minor: new user-visible features, settings, UI changes, or behavior changes.
 - Major: reserved for the first stable `1.0.0` release.
 
+## [0.2.4] - 2026-07-08
+
+### Changed
+
+- Started the modular refactor by moving constants, logging setup, and shared send-result model into `telerixa_core/`.
+- Updated Steam Deck deployment to upload, install, back up, and validate the new core package.
+
 ## [0.2.3] - 2026-07-08
 
 ### Fixed

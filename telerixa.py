@@ -3,7 +3,6 @@ import asyncio
 import json
 from datetime import datetime
 import logging
-from logging.handlers import RotatingFileHandler
 import aiohttp
 import os
 import shutil
@@ -14,98 +13,23 @@ from io import BytesIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from i18n import configure_language, normalize_language, tr
-
-APP_NAME = "Telerixa"
-__version__ = "0.2.3"
-
-# Logging
-LOG_DIR = "logs"
-BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
-
-
-def setup_logging():
-    os.makedirs(LOG_DIR, exist_ok=True)
-
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s:%(name)s:%(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.handlers.clear()
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-
-    file_handler = RotatingFileHandler(
-        BOT_LOG_FILE,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
-
-    logging.getLogger("telethon").setLevel(logging.WARNING)
-    logging.getLogger("aiohttp").setLevel(logging.WARNING)
+from telerixa_core.constants import (
+    ALBUM_LOOKUP_RADIUS,
+    ALBUM_MESSAGES_CACHE_ATTR,
+    APP_NAME,
+    CONFIG_FILE,
+    CONFIG_RELOAD_KEYS,
+    VALID_LARGE_FILE_ACTIONS,
+    VERSION as __version__,
+)
+from telerixa_core.logging_setup import setup_logging
+from telerixa_core.models import SendResult
 
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
 # ===== FILE-BASED CONFIGURATION =====
-
-CONFIG_FILE = "config.json"
-
-CONFIG_RELOAD_KEYS = (
-    "LANGUAGE",
-    "DISCORD_WEBHOOK_URL",
-    "DISCORD_ALERT_USER_ID",
-    "TELEGRAM_CHANNELS",
-    "CHECK_INTERVAL",
-    "MAX_MESSAGE_LENGTH",
-    "TIMEZONE",
-    "DISCORD_FILE_LIMIT_MB",
-    "LARGE_FILE_ACTION",
-    "STARTUP_CATCH_UP_LIMIT",
-    "MAX_QUEUE_ATTEMPTS",
-)
-
-VALID_LARGE_FILE_ACTIONS = {
-    "send_text_link",
-    "skip_post",
-    "try_send_then_text",
-}
-
-ALBUM_LOOKUP_RADIUS = 20
-ALBUM_MESSAGES_CACHE_ATTR = "_telerixa_album_messages_cache"
-
-
-class SendResult:
-    def __init__(self, ok, error="", terminal=False):
-        self.ok = bool(ok)
-        self.error = str(error or "")
-        self.terminal = bool(terminal)
-
-    def __bool__(self):
-        return self.ok
-
-    @classmethod
-    def success(cls):
-        return cls(True)
-
-    @classmethod
-    def retry(cls, error):
-        return cls(False, error, terminal=False)
-
-    @classmethod
-    def terminal_failure(cls, error):
-        return cls(False, error, terminal=True)
 
 
 def as_send_result(value, fallback_error=None):
