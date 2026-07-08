@@ -4,7 +4,7 @@ set -eu
 TARGET_DIR="${1:-}"
 TMP_DIR="${2:-/home/deck/.telerixa_deploy}"
 START_BOT="${3:-1}"
-DEPLOY_REMOTE_VERSION="20260708-telerixa-v0.2.2"
+DEPLOY_REMOTE_VERSION="20260708-telerixa-v0.2.3"
 
 fail() {
   echo "ERROR: $1" >&2

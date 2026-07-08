@@ -8,6 +8,13 @@ This project follows semantic versioning while it is pre-1.0:
 - Minor: new user-visible features, settings, UI changes, or behavior changes.
 - Major: reserved for the first stable `1.0.0` release.
 
+## [0.2.3] - 2026-07-08
+
+### Fixed
+
+- Unified Telegram album collection for initial sending, retry delivery, and processed-message state updates.
+- Added album collection diagnostics with collected item count and message IDs.
+
 ## [0.2.2] - 2026-07-08
 
 ### Fixed

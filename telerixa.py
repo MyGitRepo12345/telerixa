@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from i18n import configure_language, normalize_language, tr
 
 APP_NAME = "Telerixa"
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 # Logging
 LOG_DIR = "logs"
@@ -81,6 +81,9 @@ VALID_LARGE_FILE_ACTIONS = {
     "skip_post",
     "try_send_then_text",
 }
+
+ALBUM_LOOKUP_RADIUS = 20
+ALBUM_MESSAGES_CACHE_ATTR = "_telerixa_album_messages_cache"
 
 
 class SendResult:
@@ -1180,33 +1183,85 @@ async def collect_startup_tail(entity, last_seen_id, limit):
     return selected_messages, has_older_forwardable
 
 
-async def get_album_message_ids(channel_name, message):
-    if not message.grouped_id:
-        return [message.id]
+def format_album_ids(album_messages):
+    return ", ".join(str(album_message.id) for album_message in album_messages)
 
-    start_id = max(1, message.id - 10)
-    nearby_ids = list(range(start_id, message.id + 11))
+
+async def get_album_messages(channel_name, message):
+    if not message.grouped_id:
+        return [message]
+
+    cached_album_messages = getattr(message, ALBUM_MESSAGES_CACHE_ATTR, None)
+    if cached_album_messages is not None:
+        return cached_album_messages
+
+    start_id = max(1, message.id - ALBUM_LOOKUP_RADIUS)
+    end_id = message.id + ALBUM_LOOKUP_RADIUS
+    nearby_ids = list(range(start_id, end_id + 1))
 
     try:
         messages_batch = await telegram_client.get_messages(f"@{channel_name}", ids=nearby_ids)
-        album_ids = sorted(
-            album_message.id
+        album_messages = [
+            album_message
             for album_message in messages_batch
             if album_message and album_message.grouped_id == message.grouped_id
-        )
-        if album_ids:
-            return album_ids
+        ]
+        album_messages.sort(key=lambda album_message: album_message.id)
     except Exception as e:
         logger.warning(
             tr(
-                "media.album_ids_failed",
+                "media.album_lookup_failed",
                 channel=channel_name,
                 message_id=message.id,
+                grouped_id=message.grouped_id,
                 error=e,
             )
         )
+        fallback_album_messages = [message]
+        try:
+            setattr(message, ALBUM_MESSAGES_CACHE_ATTR, fallback_album_messages)
+        except Exception:
+            pass
+        return fallback_album_messages
 
-    return [message.id]
+    if not album_messages:
+        album_messages = [message]
+
+    try:
+        setattr(message, ALBUM_MESSAGES_CACHE_ATTR, album_messages)
+    except Exception:
+        pass
+
+    album_ids = format_album_ids(album_messages)
+    if len(album_messages) <= 1:
+        logger.warning(
+            tr(
+                "media.album_collected_single",
+                channel=channel_name,
+                grouped_id=message.grouped_id,
+                message_id=message.id,
+                radius=ALBUM_LOOKUP_RADIUS,
+                count=len(album_messages),
+                ids=album_ids,
+            )
+        )
+    else:
+        logger.info(
+            tr(
+                "media.album_collected",
+                channel=channel_name,
+                grouped_id=message.grouped_id,
+                count=len(album_messages),
+                ids=album_ids,
+            )
+        )
+
+    return album_messages
+
+
+async def get_album_message_ids(channel_name, message):
+    album_messages = await get_album_messages(channel_name, message)
+    return [album_message.id for album_message in album_messages]
 
 
 async def get_processed_until_id(channel_name, message):
@@ -1646,14 +1701,7 @@ async def send_to_discord(telegram_message, channel_name):
             try:
                 temp_dir = tempfile.mkdtemp()
                 temp_dirs.append(temp_dir)
-                start_id = max(1, telegram_message.id - 10)
-                nearby_ids = list(range(start_id, telegram_message.id + 11))
-                messages_batch = await telegram_client.get_messages(f"@{channel_name}", ids=nearby_ids)
-                album_messages = [
-                    msg for msg in messages_batch
-                    if msg and msg.grouped_id == telegram_message.grouped_id
-                ]
-                album_messages.sort(key=lambda m: m.id)
+                album_messages = await get_album_messages(channel_name, telegram_message)
                 text_message = select_album_text_message(album_messages, telegram_message)
                 message_time = get_message_datetime(text_message)
 
