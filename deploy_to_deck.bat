@@ -46,7 +46,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-for %%F in (telerixa.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh) do (
+for %%F in (telerixa.py i18n.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh) do (
+    if not exist "%%F" (
+        echo ERROR: local file is missing: %%F
+        exit /b 1
+    )
+)
+
+for %%F in (locales\en.json locales\ru.json) do (
     if not exist "%%F" (
         echo ERROR: local file is missing: %%F
         exit /b 1
@@ -72,7 +79,7 @@ if errorlevel 1 (
 )
 
 echo Uploading code files...
-scp telerixa.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh %DECK_USER%@%DECK_HOST%:%REMOTE_TMP%/
+scp -r telerixa.py i18n.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh locales %DECK_USER%@%DECK_HOST%:%REMOTE_TMP%/
 if errorlevel 1 (
     echo ERROR: Upload failed.
     exit /b 1

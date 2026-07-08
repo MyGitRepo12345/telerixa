@@ -4,7 +4,7 @@ set -eu
 TARGET_DIR="${1:-}"
 TMP_DIR="${2:-/home/deck/.telerixa_deploy}"
 START_BOT="${3:-1}"
-DEPLOY_REMOTE_VERSION="20260708-telerixa-v0.2.0"
+DEPLOY_REMOTE_VERSION="20260708-telerixa-v0.2.2"
 
 fail() {
   echo "ERROR: $1" >&2
@@ -179,9 +179,12 @@ fi
 
 echo "Deploy remote script version: $DEPLOY_REMOTE_VERSION"
 
-for file in telerixa.py web_ui.py requirements.txt run.sh run_ui.sh; do
+for file in telerixa.py i18n.py web_ui.py requirements.txt run.sh run_ui.sh; do
   [ -f "$TMP_DIR/$file" ] || fail "Missing staged file: $TMP_DIR/$file"
 done
+
+[ -f "$TMP_DIR/locales/en.json" ] || fail "Missing staged file: $TMP_DIR/locales/en.json"
+[ -f "$TMP_DIR/locales/ru.json" ] || fail "Missing staged file: $TMP_DIR/locales/ru.json"
 
 if command -v python3 >/dev/null 2>&1; then
   PYTHON_CHECK_BIN="python3"
@@ -192,7 +195,7 @@ else
 fi
 
 echo "Validating staged Python syntax on Steam Deck..."
-"$PYTHON_CHECK_BIN" -m py_compile "$TMP_DIR/telerixa.py" "$TMP_DIR/web_ui.py"
+"$PYTHON_CHECK_BIN" -m py_compile "$TMP_DIR/telerixa.py" "$TMP_DIR/i18n.py" "$TMP_DIR/web_ui.py"
 
 echo "Stopping running bot/UI processes if they exist..."
 stop_target_processes "[p]ython[0-9.]* .*telerixa[.]py"
@@ -214,22 +217,27 @@ find "$TARGET_DIR" -maxdepth 1 -type d -name ".deploy_backup_*" \
     done
 
 echo "Backing up current code to: $BACKUP_DIR"
-for file in Script.py telerixa.py web_ui.py requirements.txt run.sh run_ui.sh; do
+for file in Script.py telerixa.py i18n.py web_ui.py requirements.txt run.sh run_ui.sh; do
   if [ -f "$TARGET_DIR/$file" ]; then
     cp "$TARGET_DIR/$file" "$BACKUP_DIR/$file"
   fi
 done
+if [ -d "$TARGET_DIR/locales" ]; then
+  cp -R "$TARGET_DIR/locales" "$BACKUP_DIR/locales"
+fi
 
 echo "Installing new code..."
-for file in telerixa.py web_ui.py requirements.txt run.sh run_ui.sh; do
+for file in telerixa.py i18n.py web_ui.py requirements.txt run.sh run_ui.sh; do
   cp "$TMP_DIR/$file" "$TARGET_DIR/$file"
 done
+rm -rf "$TARGET_DIR/locales"
+cp -R "$TMP_DIR/locales" "$TARGET_DIR/locales"
 
 rm -f "$TARGET_DIR/Script.py"
 chmod +x "$TARGET_DIR/run.sh" "$TARGET_DIR/run_ui.sh"
 
 echo "Validating Python syntax on Steam Deck..."
-"$PYTHON_CHECK_BIN" -m py_compile "$TARGET_DIR/telerixa.py" "$TARGET_DIR/web_ui.py"
+"$PYTHON_CHECK_BIN" -m py_compile "$TARGET_DIR/telerixa.py" "$TARGET_DIR/i18n.py" "$TARGET_DIR/web_ui.py"
 
 rm -rf "$TMP_DIR"
 

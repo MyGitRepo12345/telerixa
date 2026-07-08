@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from i18n import configure_language, normalize_language, tr
 
 APP_NAME = "Telerixa"
-__version__ = "0.2.0"
+__version__ = "0.2.2"
 
 # Logging
 LOG_DIR = "logs"

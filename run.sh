@@ -53,47 +53,58 @@ source "$VENV_DIR/bin/activate"
 
 notify_discord_exit() {
   exit_code="$1"
-  python - "$exit_code" <<'PY' || true
+  python - "$exit_code" <<'PY'
+import asyncio
 import json
 import sys
-import urllib.request
+
+import aiohttp
 
 exit_code = sys.argv[1]
 
-try:
-    with open("config.json", "r", encoding="utf-8-sig") as config_file:
-        config = json.load(config_file)
-except Exception:
-    raise SystemExit(0)
+async def main():
+    try:
+        with open("config.json", "r", encoding="utf-8-sig") as config_file:
+            config = json.load(config_file)
+    except Exception as exc:
+        print(f"Could not read config.json for crash notification: {exc}")
+        raise SystemExit(2)
 
-webhook_url = config.get("DISCORD_WEBHOOK_URL")
-if not webhook_url:
-    raise SystemExit(0)
+    webhook_url = config.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        print("DISCORD_WEBHOOK_URL is empty; crash notification skipped.")
+        raise SystemExit(2)
 
-alert_user_id = str(config.get("DISCORD_ALERT_USER_ID", "")).strip()
-mention = f"<@{alert_user_id}> " if alert_user_id else ""
+    alert_user_id = str(config.get("DISCORD_ALERT_USER_ID", "")).strip()
+    mention = f"<@{alert_user_id}> " if alert_user_id else ""
 
-payload = {
-    "content": (
-        f"{mention}WARNING: Telerixa stopped on Steam Deck.\n"
-        f"Exit code: `{exit_code}`\n"
-        "Check the Konsole window or `logs/bot.log`."
-    )
-}
+    payload = {
+        "content": (
+            f"{mention}WARNING: Telerixa stopped on Steam Deck.\n"
+            f"Exit code: `{exit_code}`\n"
+            "Check the Konsole window or `logs/bot.log`."
+        )
+    }
+    if alert_user_id:
+        payload["allowed_mentions"] = {"users": [alert_user_id]}
 
-data = json.dumps(payload).encode("utf-8")
-request = urllib.request.Request(
-    webhook_url,
-    data=data,
-    headers={"Content-Type": "application/json"},
-    method="POST",
-)
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(webhook_url, json=payload, timeout=timeout) as response:
+                body = await response.text()
+                if response.status not in (200, 204):
+                    print(f"Discord crash notification failed: HTTP {response.status}: {body[:500]}")
+                    raise SystemExit(3)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"Discord crash notification failed: {exc}")
+        raise SystemExit(4)
 
-try:
-    with urllib.request.urlopen(request, timeout=10) as response:
-        response.read()
-except Exception:
-    pass
+    print("Discord crash notification sent.")
+
+asyncio.run(main())
 PY
 }
 
@@ -122,10 +133,19 @@ set -e
 echo
 echo "Bot stopped with exit code $BOT_EXIT_CODE."
 
-if [ "$BOT_EXIT_CODE" -ne 0 ]; then
-  echo "Sending Discord crash notification..."
-  notify_discord_exit "$BOT_EXIT_CODE"
-fi
+case "$BOT_EXIT_CODE" in
+  0)
+    ;;
+  130|143)
+    echo "Bot stopped by signal/control flow; crash notification skipped."
+    ;;
+  *)
+    echo "Sending Discord crash notification..."
+    if ! notify_discord_exit "$BOT_EXIT_CODE"; then
+      echo "WARNING: Discord crash notification was not sent."
+    fi
+    ;;
+esac
 
 read -r -p "Press Enter to close..."
 exit "$BOT_EXIT_CODE"
