@@ -1,0 +1,16 @@
+{
+  "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/WEBHOOK_ID/WEBHOOK_TOKEN",
+  "DISCORD_ALERT_USER_ID": "",
+  "TELEGRAM_API_ID": 0,
+  "TELEGRAM_API_HASH": "your_telegram_api_hash",
+  "TELEGRAM_CHANNELS": [
+    "example_channel"
+  ],
+  "CHECK_INTERVAL": 60,
+  "MAX_MESSAGE_LENGTH": 2000,
+  "TIMEZONE": "Europe/Berlin",
+  "DISCORD_FILE_LIMIT_MB": 25,
+  "LARGE_FILE_ACTION": "send_text_link",
+  "STARTUP_CATCH_UP_LIMIT": 10,
+  "MAX_QUEUE_ATTEMPTS": 24
+}

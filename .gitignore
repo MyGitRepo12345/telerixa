@@ -1,0 +1,46 @@
+# Secrets and local config
+config.json
+*.local.json
+.env
+.env.*
+!.env.example
+deploy_config.local.bat
+
+# Telegram session and runtime state
+*.session
+*.session-*
+tg_session.session
+tg_session.session-*
+bot_state.db
+bot_state.db-*
+seen_messages.json
+
+# Logs, temp files, local exports
+logs/
+*.log
+log.html
+Discord
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+.venv-*/
+.venv-linux/
+venv/
+env/
+
+# Deploy backups
+.deploy_backup_*/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
