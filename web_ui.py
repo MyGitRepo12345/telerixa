@@ -1,4 +1,4 @@
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -928,7 +928,7 @@ def render_page(config, notice="", error="", form_values=None):
 </html>"""
 
 
-class SingleInstanceHTTPServer(ThreadingHTTPServer):
+class SingleInstanceHTTPServer(HTTPServer):
     allow_reuse_address = os.name != "nt"
 
     def server_bind(self):

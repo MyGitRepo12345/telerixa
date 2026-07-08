@@ -8,6 +8,18 @@ This project follows semantic versioning while it is pre-1.0:
 - Minor: new user-visible features, settings, UI changes, or behavior changes.
 - Major: reserved for the first stable `1.0.0` release.
 
+## [0.2.6] - 2026-07-08
+
+### Fixed
+
+- Switched the local settings UI to a single-threaded HTTP server to prevent language state races during page rendering.
+
+### Changed
+
+- Moved SQLite state storage helpers into `telerixa_core/state.py`.
+- Kept state storage independent from runtime globals by passing database paths and prepared timestamps explicitly.
+- Updated Steam Deck deployment validation for the new state module.
+
 ## [0.2.5] - 2026-07-08
 
 ### Changed
