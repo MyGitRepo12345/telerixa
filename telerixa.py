@@ -13,6 +13,9 @@ import tempfile
 from io import BytesIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+APP_NAME = "Telerixa"
+__version__ = "0.1.0"
+
 # Настройка логирования
 LOG_DIR = "logs"
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
@@ -1743,7 +1746,7 @@ async def send_to_discord(telegram_message, channel_name):
 # ===== ОСНОВНОЙ ЦИКЛ =====
 
 async def main():
-    logger.info("Стартуем форвард новостей из Telegram в Discord")
+    logger.info(f"Стартуем {APP_NAME} v{__version__}")
     logger.info(f"Каналы Telegram: {', '.join(TELEGRAM_CHANNELS)}")
     logger.info(f"Проверка каждые {CHECK_INTERVAL} секунд")
 

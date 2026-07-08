@@ -27,7 +27,7 @@ if not defined REMOTE_DIR (
     exit /b 1
 )
 
-if not defined REMOTE_TMP set "REMOTE_TMP=/home/%DECK_USER%/.tg_forwarder_deploy"
+if not defined REMOTE_TMP set "REMOTE_TMP=/home/%DECK_USER%/.telerixa_deploy"
 if not defined START_BOT set "START_BOT=1"
 
 echo Deploy Telerixa to Steam Deck
@@ -46,7 +46,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-for %%F in (Script.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh) do (
+for %%F in (telerixa.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh) do (
     if not exist "%%F" (
         echo ERROR: local file is missing: %%F
         exit /b 1
@@ -72,7 +72,7 @@ if errorlevel 1 (
 )
 
 echo Uploading code files...
-scp Script.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh %DECK_USER%@%DECK_HOST%:%REMOTE_TMP%/
+scp telerixa.py web_ui.py requirements.txt run.sh run_ui.sh deploy_remote.sh %DECK_USER%@%DECK_HOST%:%REMOTE_TMP%/
 if errorlevel 1 (
     echo ERROR: Upload failed.
     exit /b 1

@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-echo 🚀 Запуск форварда Telegram -> Discord
+echo 🚀 Запуск Telerixa
 echo.
 call .venv\Scripts\activate.bat
-python Script.py
+python telerixa.py
 echo.
-echo ⛔ Форвард остановлен
+echo ⛔ Telerixa остановлена
 pause

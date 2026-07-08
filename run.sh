@@ -21,14 +21,14 @@ else
   exit 1
 fi
 
-if [ ! -f "Script.py" ]; then
-  echo "Script.py was not found. Run this file from the bot folder."
+if [ ! -f "telerixa.py" ]; then
+  echo "telerixa.py was not found. Run this file from the bot folder."
   read -r -p "Press Enter to close..."
   exit 1
 fi
 
 if [ ! -f "config.json" ]; then
-  echo "config.json was not found. Put it next to Script.py before starting the bot."
+  echo "config.json was not found. Put it next to telerixa.py before starting the bot."
   read -r -p "Press Enter to close..."
   exit 1
 fi
@@ -75,7 +75,7 @@ mention = f"<@{alert_user_id}> " if alert_user_id else ""
 
 payload = {
     "content": (
-        f"{mention}WARNING: Telegram -> Discord bot stopped on Steam Deck.\n"
+        f"{mention}WARNING: Telerixa stopped on Steam Deck.\n"
         f"Exit code: `{exit_code}`\n"
         "Check the Konsole window or `logs/bot.log`."
     )
@@ -115,7 +115,7 @@ echo "Press Ctrl+C to stop."
 echo
 
 set +e
-python "$(pwd)/Script.py"
+python "$(pwd)/telerixa.py"
 BOT_EXIT_CODE=$?
 set -e
 

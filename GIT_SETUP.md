@@ -2,7 +2,7 @@
 
 ## What is safe to commit
 
-- `Script.py`
+- `telerixa.py`
 - `web_ui.py`
 - `requirements.txt`
 - `run.bat`, `run.sh`, `run_ui.bat`, `run_ui.sh`
