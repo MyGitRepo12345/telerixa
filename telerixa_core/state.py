@@ -2,6 +2,14 @@ from datetime import datetime
 import sqlite3
 
 
+class StateConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def parse_stored_ts(value, fallback_ts):
     if value is None:
         return fallback_ts
@@ -21,7 +29,11 @@ def parse_stored_ts(value, fallback_ts):
 
 
 def connect_state_db(db_file, timeout_seconds, busy_timeout_ms):
-    conn = sqlite3.connect(db_file, timeout=timeout_seconds)
+    conn = sqlite3.connect(
+        db_file,
+        timeout=timeout_seconds,
+        factory=StateConnection,
+    )
     conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
@@ -54,7 +66,11 @@ def init_state_db(db_file, timeout_seconds, busy_timeout_ms, fallback_ts):
                 attempts INTEGER NOT NULL DEFAULT 0,
                 next_retry_at TEXT NOT NULL,
                 next_retry_ts REAL NOT NULL,
+                telegram_date_ts REAL NOT NULL,
                 last_error TEXT,
+                next_chunk_index INTEGER NOT NULL DEFAULT 0,
+                media_sent INTEGER NOT NULL DEFAULT 0,
+                rendered_text TEXT,
                 PRIMARY KEY (channel, message_id)
             )
             """
@@ -86,6 +102,21 @@ def ensure_pending_message_columns(conn, fallback_ts):
         if column_name not in columns:
             conn.execute(f"ALTER TABLE pending_messages ADD COLUMN {column_name} REAL")
 
+    if "next_chunk_index" not in columns:
+        conn.execute(
+            "ALTER TABLE pending_messages "
+            "ADD COLUMN next_chunk_index INTEGER NOT NULL DEFAULT 0"
+        )
+    if "media_sent" not in columns:
+        conn.execute(
+            "ALTER TABLE pending_messages "
+            "ADD COLUMN media_sent INTEGER NOT NULL DEFAULT 0"
+        )
+    if "rendered_text" not in columns:
+        conn.execute("ALTER TABLE pending_messages ADD COLUMN rendered_text TEXT")
+    if "telegram_date_ts" not in columns:
+        conn.execute("ALTER TABLE pending_messages ADD COLUMN telegram_date_ts REAL")
+
     rows = conn.execute(
         """
         SELECT channel, message_id, created_at, updated_at, next_retry_at
@@ -110,6 +141,15 @@ def ensure_pending_message_columns(conn, fallback_ts):
             """,
             (created_ts, updated_ts, next_retry_ts, channel, int(message_id)),
         )
+
+    conn.execute(
+        """
+        UPDATE pending_messages
+        SET telegram_date_ts = COALESCE(created_ts, ?)
+        WHERE telegram_date_ts IS NULL
+        """,
+        (fallback_ts,),
+    )
 
 
 def get_last_seen_id(db_file, timeout_seconds, busy_timeout_ms, channel):
@@ -168,6 +208,30 @@ def get_processed_message_state(db_file, timeout_seconds, busy_timeout_ms, chann
         return None, None
 
     return row[0], row[1]
+
+
+def get_processed_group_message_ids(
+    db_file,
+    timeout_seconds,
+    busy_timeout_ms,
+    channel,
+    grouped_id,
+):
+    if grouped_id is None:
+        return []
+
+    with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
+        rows = conn.execute(
+            """
+            SELECT message_id
+            FROM processed_messages
+            WHERE channel = ? AND grouped_id = ?
+            ORDER BY message_id ASC
+            """,
+            (channel, int(grouped_id)),
+        ).fetchall()
+
+    return [row[0] for row in rows]
 
 
 def has_pending_message(db_file, timeout_seconds, busy_timeout_ms, channel, message_id=None, grouped_id=None):
@@ -258,6 +322,13 @@ def get_retry_delay_seconds(attempts):
     return delays[index]
 
 
+def calculate_retry_schedule(current_attempts, count_attempt, now_ts):
+    attempts = current_attempts + 1 if count_attempt else current_attempts
+    delay_attempts = attempts if count_attempt else max(current_attempts, 3)
+    next_retry_ts = now_ts + get_retry_delay_seconds(delay_attempts)
+    return attempts, next_retry_ts
+
+
 def add_pending_message(
     db_file,
     timeout_seconds,
@@ -268,8 +339,14 @@ def add_pending_message(
     error,
     now_ts,
     now_text,
+    telegram_date_ts=None,
 ):
     grouped_value = int(grouped_id) if grouped_id else None
+    telegram_date_ts = (
+        float(telegram_date_ts)
+        if telegram_date_ts is not None
+        else float(now_ts)
+    )
 
     with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
         conn.execute(
@@ -285,13 +362,18 @@ def add_pending_message(
                 attempts,
                 next_retry_at,
                 next_retry_ts,
+                telegram_date_ts,
                 last_error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             ON CONFLICT(channel, message_id) DO UPDATE SET
                 grouped_id = excluded.grouped_id,
                 updated_at = excluded.updated_at,
                 updated_ts = excluded.updated_ts,
+                telegram_date_ts = COALESCE(
+                    pending_messages.telegram_date_ts,
+                    excluded.telegram_date_ts
+                ),
                 last_error = excluded.last_error
             """,
             (
@@ -304,6 +386,7 @@ def add_pending_message(
                 now_ts,
                 now_text,
                 now_ts,
+                telegram_date_ts,
                 error,
             ),
         )
@@ -363,6 +446,66 @@ def update_pending_failure(
         conn.commit()
 
 
+def get_pending_delivery_progress(
+    db_file,
+    timeout_seconds,
+    busy_timeout_ms,
+    channel,
+    message_id,
+):
+    with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
+        row = conn.execute(
+            """
+            SELECT next_chunk_index, media_sent, rendered_text
+            FROM pending_messages
+            WHERE channel = ? AND message_id = ?
+            """,
+            (channel, int(message_id)),
+        ).fetchone()
+
+    if not row:
+        return 0, False, None
+    return max(0, int(row[0] or 0)), bool(row[1]), row[2]
+
+
+def update_pending_delivery_progress(
+    db_file,
+    timeout_seconds,
+    busy_timeout_ms,
+    channel,
+    message_id,
+    next_chunk_index=None,
+    media_sent=None,
+    rendered_text=None,
+):
+    assignments = []
+    values = []
+
+    if next_chunk_index is not None:
+        assignments.append("next_chunk_index = MAX(next_chunk_index, ?)")
+        values.append(max(0, int(next_chunk_index)))
+    if media_sent is not None:
+        assignments.append("media_sent = MAX(media_sent, ?)")
+        values.append(1 if media_sent else 0)
+    if rendered_text is not None:
+        assignments.append("rendered_text = COALESCE(rendered_text, ?)")
+        values.append(str(rendered_text))
+    if not assignments:
+        return
+
+    values.extend((channel, int(message_id)))
+    with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
+        conn.execute(
+            f"""
+            UPDATE pending_messages
+            SET {', '.join(assignments)}
+            WHERE channel = ? AND message_id = ?
+            """,
+            values,
+        )
+        conn.commit()
+
+
 def delete_pending_message(db_file, timeout_seconds, busy_timeout_ms, channel, message_id):
     with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
         conn.execute(
@@ -376,10 +519,17 @@ def get_due_pending_messages(db_file, timeout_seconds, busy_timeout_ms, now_ts, 
     with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
         rows = conn.execute(
             """
-            SELECT channel, message_id, grouped_id, attempts, last_error
+            SELECT channel,
+                   message_id,
+                   grouped_id,
+                   attempts,
+                   last_error,
+                   next_chunk_index,
+                   media_sent,
+                   rendered_text
             FROM pending_messages
             WHERE next_retry_ts <= ?
-            ORDER BY next_retry_ts ASC, created_ts ASC
+            ORDER BY telegram_date_ts ASC, next_retry_ts ASC, created_ts ASC
             LIMIT ?
             """,
             (now_ts, int(limit)),
@@ -469,4 +619,3 @@ def migrate_legacy_seen_messages(
             conn.commit()
 
     return migrated_channels, inserted
-

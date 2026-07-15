@@ -60,12 +60,49 @@ for %%F in (locales\en.json locales\ru.json) do (
     )
 )
 
-for %%F in (telerixa_core\__init__.py telerixa_core\constants.py telerixa_core\formatting.py telerixa_core\logging_setup.py telerixa_core\models.py telerixa_core\state.py) do (
+for %%F in (telerixa_core\__init__.py telerixa_core\config.py telerixa_core\constants.py telerixa_core\delivery.py telerixa_core\discord_delivery.py telerixa_core\formatting.py telerixa_core\logging_setup.py telerixa_core\media_delivery.py telerixa_core\models.py telerixa_core\state.py telerixa_core\telegram_reader.py) do (
     if not exist "%%F" (
         echo ERROR: local file is missing: %%F
         exit /b 1
     )
 )
+
+if not exist "tests\test_*.py" (
+    echo ERROR: no local tests were found in tests\.
+    exit /b 1
+)
+
+set "TEST_PYTHON="
+set "TEST_PYTHON_ARGS="
+
+if exist ".venv\Scripts\python.exe" (
+    set "TEST_PYTHON=.venv\Scripts\python.exe"
+) else (
+    where py >nul 2>nul
+    if not errorlevel 1 (
+        set "TEST_PYTHON=py"
+        set "TEST_PYTHON_ARGS=-3"
+    ) else (
+        where python >nul 2>nul
+        if not errorlevel 1 set "TEST_PYTHON=python"
+    )
+)
+
+if not defined TEST_PYTHON (
+    echo ERROR: Python was not found. Cannot run pre-deploy tests.
+    exit /b 1
+)
+
+echo Running pre-deploy tests...
+"%TEST_PYTHON%" %TEST_PYTHON_ARGS% -W error::ResourceWarning -m unittest discover -s tests -v
+if errorlevel 1 (
+    echo.
+    echo ERROR: Pre-deploy tests failed. Steam Deck was not touched.
+    exit /b 1
+)
+
+echo Pre-deploy tests passed. Starting deployment...
+echo.
 
 echo Validating remote folder...
 ssh %DECK_USER%@%DECK_HOST% "test -d '%REMOTE_DIR%' && test -f '%REMOTE_DIR%/config.json'"

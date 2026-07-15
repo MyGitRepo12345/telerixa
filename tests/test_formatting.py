@@ -1,0 +1,148 @@
+import unittest
+
+from i18n import configure_language
+from telerixa_core import formatting
+
+
+class FakeReplyTo:
+    def __init__(self, quote_text=None, reply_to_peer_id=None, reply_to_msg_id=None):
+        self.quote_text = quote_text
+        self.reply_to_peer_id = reply_to_peer_id
+        self.reply_to_msg_id = reply_to_msg_id
+
+
+class FakeChat:
+    def __init__(self, title=None, username=None):
+        self.title = title
+        self.username = username
+
+
+class FakeMessage:
+    def __init__(
+        self,
+        message_id,
+        text="",
+        reply_to=None,
+        reply_message=None,
+        chat=None,
+        forward=None,
+    ):
+        self.id = message_id
+        self.text = text
+        self.reply_to = reply_to
+        self._reply_message = reply_message
+        self.chat = chat
+        self.forward = forward
+
+    async def get_reply_message(self):
+        return self._reply_message
+
+
+class FakeTelegramClient:
+    def __init__(self, messages):
+        self.messages = messages
+
+    async def get_messages(self, peer_id, ids):
+        return self.messages.get((peer_id, ids))
+
+
+class FormattingTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        configure_language("en")
+
+    def test_split_text_keeps_words_when_possible(self):
+        self.assertEqual(
+            formatting.split_text("alpha beta gamma", 10),
+            ["alpha beta", "gamma"],
+        )
+
+    def test_split_text_splits_long_words(self):
+        self.assertEqual(
+            formatting.split_text("abcdefghij", 4),
+            ["abcd", "efgh", "ij"],
+        )
+
+    def test_select_album_text_message_prefers_longest_caption(self):
+        fallback = FakeMessage(1, "fallback")
+        chosen = formatting.select_album_text_message(
+            [
+                FakeMessage(2, ""),
+                FakeMessage(3, "short"),
+                FakeMessage(4, "longer caption"),
+            ],
+            fallback,
+        )
+        self.assertEqual(chosen.id, 4)
+
+    def test_select_album_text_message_falls_back_without_caption(self):
+        fallback = FakeMessage(1, "fallback")
+        self.assertIs(
+            formatting.select_album_text_message([FakeMessage(2, "")], fallback),
+            fallback,
+        )
+
+    async def test_build_message_text_includes_reply_quote(self):
+        message = FakeMessage(
+            123,
+            text="main text",
+            reply_to=FakeReplyTo(quote_text="quoted line"),
+        )
+
+        text = await formatting.build_message_text(message, "demo_channel")
+
+        self.assertIn("https://t.me/demo_channel/123", text)
+        self.assertIn("Reply to another Telegram post", text)
+        self.assertIn("> quoted line", text)
+        self.assertIn("main text", text)
+
+    async def test_build_message_text_fetches_cross_reply_with_client(self):
+        reply_message = FakeMessage(
+            99,
+            text="reply body",
+            chat=FakeChat(title="Source Channel", username="source_channel"),
+        )
+        telegram_client = FakeTelegramClient({("peer", 99): reply_message})
+        message = FakeMessage(
+            123,
+            text="main text",
+            reply_to=FakeReplyTo(reply_to_peer_id="peer", reply_to_msg_id=99),
+        )
+
+        text = await formatting.build_message_text(
+            message,
+            "demo_channel",
+            telegram_client=telegram_client,
+        )
+
+        self.assertIn("Reply to [Source Channel](https://t.me/source_channel/99)", text)
+        self.assertIn("> reply body", text)
+
+    async def test_long_reply_context_is_preserved_and_chunked(self):
+        tail_marker = "END-OF-REPLY-CONTEXT"
+        reply_body = ("Long forwarded reply paragraph. " * 80) + tail_marker
+        reply_message = FakeMessage(
+            99,
+            text=reply_body,
+            chat=FakeChat(title="Source Channel", username="source_channel"),
+        )
+        message = FakeMessage(
+            123,
+            text="main text",
+            reply_to=FakeReplyTo(),
+            reply_message=reply_message,
+        )
+
+        text = await formatting.build_message_text(message, "demo_channel")
+        chunks = formatting.split_text(text, 500)
+
+        self.assertIn(tail_marker, text)
+        self.assertNotIn("END-OF-REPLY-CON...", text)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(any(tail_marker in chunk for chunk in chunks))
+
+    def test_repair_mojibake_leaves_normal_text_unchanged(self):
+        self.assertEqual(formatting.repair_mojibake("normal text"), "normal text")
+
+
+if __name__ == "__main__":
+    unittest.main()

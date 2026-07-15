@@ -8,6 +8,43 @@ This project follows semantic versioning while it is pre-1.0:
 - Minor: new user-visible features, settings, UI changes, or behavior changes.
 - Major: reserved for the first stable `1.0.0` release.
 
+## [0.3.0] - 2026-07-15
+
+### Added
+
+- Added concurrent Telegram channel collection with deterministic global chronological delivery.
+- Added immutable runtime configuration snapshots and atomic hot reloads.
+- Added durable delivery progress for restart-safe media and text resume.
+- Added source timestamps to queued messages so retries preserve Telegram chronology.
+- Added regression coverage for configuration, state, formatting, Discord delivery, media resume, Telegram collection, and the settings UI.
+- Added a mandatory local test gate before Steam Deck deployment starts.
+
+### Changed
+
+- Split the former monolithic bot into focused modules for configuration, state, delivery, Discord, media, Telegram reading, formatting, logging, constants, and shared models.
+- Changed channel polling to collect concurrently while keeping Discord delivery sequential and ordered.
+- Changed retry processing to continue best effort when an individual post cannot be delivered.
+- Updated Steam Deck deployment validation for the modular package layout.
+- Long reply and forward context is now split across Discord messages instead of being truncated.
+
+### Fixed
+
+- Fixed SQLite connections remaining open after state operations.
+- Fixed transient network failures consuming the bounded terminal retry budget.
+- Fixed permanently unavailable queued posts retrying forever instead of becoming explicit failed records.
+- Fixed partial Discord deliveries restarting from the beginning after a retry or process restart.
+- Fixed generic Telegram connection failures being treated like invalid session errors.
+- Fixed fatal startup failures returning a successful process exit code or silently losing crash-alert failures.
+- Fixed inconsistent Telegram album discovery between initial delivery, retries, and stored message statuses.
+
+## [0.2.7] - 2026-07-08
+
+### Added
+
+- Added regression tests for SQLite state storage helpers.
+- Added regression tests for Telegram message formatting helpers.
+- Added `requirements-dev.txt` for local test tooling.
+
 ## [0.2.6] - 2026-07-08
 
 ### Fixed

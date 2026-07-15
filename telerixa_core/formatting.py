@@ -34,13 +34,6 @@ def get_forward_info(message):
     return tr("telegram.forward_from_unknown")
 
 
-def trim_context_text(text, limit=700):
-    text = (text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit - 3].rstrip() + "..."
-
-
 def repair_mojibake(text):
     if not text:
         return text
@@ -112,7 +105,7 @@ async def get_reply_info(message, telegram_client=None):
         getattr(reply_to, "quote_text", None)
         or (reply_message.text if reply_message else "")
     )
-    reply_text = trim_context_text(repair_mojibake(reply_text))
+    reply_text = (repair_mojibake(reply_text) or "").strip()
     if reply_text:
         return f"{header}\n\n{format_blockquote(reply_text)}"
 
@@ -191,4 +184,3 @@ async def build_message_text(telegram_message, channel_name, text_message=None, 
         lines.append(source_message.text)
 
     return "\n\n".join(lines)
-

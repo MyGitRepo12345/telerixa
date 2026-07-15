@@ -108,16 +108,13 @@ asyncio.run(main())
 PY
 }
 
-echo "Updating pip tooling..."
-python -m pip install --upgrade pip setuptools wheel
-
 echo "Installing Python dependencies..."
-python -m pip install -r requirements.txt
+python -m pip install --disable-pip-version-check -r requirements.txt
 
 echo "Checking Europe/Berlin timezone support..."
 if ! python -c "from zoneinfo import ZoneInfo; ZoneInfo('Europe/Berlin')" >/dev/null 2>&1; then
-  echo "System timezone data is missing; installing Python tzdata fallback..."
-  python -m pip install tzdata
+  echo "WARNING: Europe/Berlin timezone data is unavailable."
+  echo "Telerixa will use the system local timezone fallback."
 fi
 
 echo

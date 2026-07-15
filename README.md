@@ -4,7 +4,7 @@ Reliable Telegram-to-Discord forwarding for media-heavy news channels.
 
 Telerixa is a production-style Telegram to Discord forwarding bot built for a real daily workflow: monitoring multiple Telegram news channels and reposting text, photos, videos, albums, and reply context into Discord through webhooks.
 
-Current version: `0.2.6`
+Current version: `0.3.0`
 
 This repository is also a QA portfolio project: it contains not only the bot itself, but also reliability work around retries, state persistence, file-size limits, runtime configuration, logging, and Steam Deck deployment.
 
@@ -13,18 +13,20 @@ This repository is also a QA portfolio project: it contains not only the bot its
 ## Features
 
 - Forwards posts from multiple Telegram channels to Discord.
-- Supports text, images, videos, albums, and Telegram reply/forward context.
+- Polls Telegram channels concurrently, then delivers collected posts in global chronological order.
+- Supports text, images, videos, albums, and complete Telegram reply/forward context.
 - Uses Discord webhooks, so no Discord bot token is required.
 - Runtime configuration via `config.json` and a local web UI.
-- Hot config reload without restarting the bot.
+- Atomic hot config reload without restarting the bot.
 - SQLite state storage for channel checkpoints, sent messages, and retry queue.
-- Retry queue for temporary network or Discord failures.
+- Durable retry queue with partial-delivery progress and restart-safe resume.
+- Separate transient and terminal failure handling so one bad post does not block the feed.
 - Configurable Discord file-size limit and behavior for oversized media.
 - Startup catch-up limit for recovering after downtime without reposting the full backlog.
 - Console and file logging.
 - JSON-based localization with English and Russian catalogs.
 - Optional Discord alert mention when the bot crashes.
-- SSH deployment flow for Steam Deck without overwriting runtime files.
+- Test-gated SSH deployment for Steam Deck without overwriting runtime files.
 
 ## Reliability Notes
 
@@ -37,6 +39,7 @@ The bot is designed around failure cases that appeared during real use:
 - Duplicate posts after restart.
 - Albums where the caption is attached to a non-first media item.
 - Telegram replies/forwards that need extra context in Discord.
+- Long reply/forward context that must be split without truncation.
 
 Runtime state is stored in SQLite, so the bot can restart without losing its queue or channel checkpoints.
 
@@ -111,6 +114,34 @@ or on SteamOS/Linux:
 ./run_ui.sh
 ```
 
+## Testing
+
+Install development dependencies when you want to run regression tests.
+
+Windows:
+
+```bat
+.venv\Scripts\pip install -r requirements-dev.txt
+```
+
+SteamOS/Linux:
+
+```bash
+.venv-linux/bin/pip install -r requirements-dev.txt
+```
+
+Run tests:
+
+```bash
+python -m pytest
+```
+
+The test suite also works without pytest:
+
+```bash
+python -W error::ResourceWarning -m unittest discover -s tests -v
+```
+
 ## Steam Deck Deployment
 
 Create a local deploy config:
@@ -124,6 +155,8 @@ Edit `deploy_config.local.bat`, then run:
 ```bat
 deploy_to_deck.bat
 ```
+
+The deploy script runs the complete local test suite first. If any test fails, deployment stops before the first SSH connection and the Steam Deck is not modified.
 
 The deploy script uploads code files only. Runtime files on the Steam Deck are preserved:
 

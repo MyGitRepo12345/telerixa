@@ -38,6 +38,14 @@ LARGE_FILE_ACTION_KEYS = (
 )
 
 
+class UIConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def get_large_file_action_options():
     return {
         action_key: tr(f"ui.action.{action_key}")
@@ -273,7 +281,11 @@ def render_select(name, current_value, options):
 
 
 def connect_db(db_file):
-    conn = sqlite3.connect(db_file, timeout=DB_TIMEOUT_SECONDS)
+    conn = sqlite3.connect(
+        db_file,
+        timeout=DB_TIMEOUT_SECONDS,
+        factory=UIConnection,
+    )
     conn.execute(f"PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn

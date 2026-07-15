@@ -4,7 +4,7 @@ set -eu
 TARGET_DIR="${1:-}"
 TMP_DIR="${2:-/home/deck/.telerixa_deploy}"
 START_BOT="${3:-1}"
-DEPLOY_REMOTE_VERSION="20260708-telerixa-v0.2.6"
+DEPLOY_REMOTE_VERSION="20260715-telerixa-v0.3.0"
 
 fail() {
   echo "ERROR: $1" >&2
@@ -186,11 +186,16 @@ done
 [ -f "$TMP_DIR/locales/en.json" ] || fail "Missing staged file: $TMP_DIR/locales/en.json"
 [ -f "$TMP_DIR/locales/ru.json" ] || fail "Missing staged file: $TMP_DIR/locales/ru.json"
 [ -f "$TMP_DIR/telerixa_core/__init__.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/__init__.py"
+[ -f "$TMP_DIR/telerixa_core/config.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/config.py"
 [ -f "$TMP_DIR/telerixa_core/constants.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/constants.py"
+[ -f "$TMP_DIR/telerixa_core/delivery.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/delivery.py"
+[ -f "$TMP_DIR/telerixa_core/discord_delivery.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/discord_delivery.py"
 [ -f "$TMP_DIR/telerixa_core/formatting.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/formatting.py"
 [ -f "$TMP_DIR/telerixa_core/logging_setup.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/logging_setup.py"
+[ -f "$TMP_DIR/telerixa_core/media_delivery.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/media_delivery.py"
 [ -f "$TMP_DIR/telerixa_core/models.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/models.py"
 [ -f "$TMP_DIR/telerixa_core/state.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/state.py"
+[ -f "$TMP_DIR/telerixa_core/telegram_reader.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/telegram_reader.py"
 
 if command -v python3 >/dev/null 2>&1; then
   PYTHON_CHECK_BIN="python3"
@@ -201,7 +206,7 @@ else
 fi
 
 echo "Validating staged Python syntax on Steam Deck..."
-"$PYTHON_CHECK_BIN" -m py_compile "$TMP_DIR/telerixa.py" "$TMP_DIR/i18n.py" "$TMP_DIR/web_ui.py" "$TMP_DIR/telerixa_core/__init__.py" "$TMP_DIR/telerixa_core/constants.py" "$TMP_DIR/telerixa_core/formatting.py" "$TMP_DIR/telerixa_core/logging_setup.py" "$TMP_DIR/telerixa_core/models.py" "$TMP_DIR/telerixa_core/state.py"
+"$PYTHON_CHECK_BIN" -m py_compile "$TMP_DIR/telerixa.py" "$TMP_DIR/i18n.py" "$TMP_DIR/web_ui.py" "$TMP_DIR/telerixa_core/__init__.py" "$TMP_DIR/telerixa_core/config.py" "$TMP_DIR/telerixa_core/constants.py" "$TMP_DIR/telerixa_core/delivery.py" "$TMP_DIR/telerixa_core/discord_delivery.py" "$TMP_DIR/telerixa_core/formatting.py" "$TMP_DIR/telerixa_core/logging_setup.py" "$TMP_DIR/telerixa_core/media_delivery.py" "$TMP_DIR/telerixa_core/models.py" "$TMP_DIR/telerixa_core/state.py" "$TMP_DIR/telerixa_core/telegram_reader.py"
 
 echo "Stopping running bot/UI processes if they exist..."
 stop_target_processes "[p]ython[0-9.]* .*telerixa[.]py"
@@ -248,7 +253,7 @@ rm -f "$TARGET_DIR/Script.py"
 chmod +x "$TARGET_DIR/run.sh" "$TARGET_DIR/run_ui.sh"
 
 echo "Validating Python syntax on Steam Deck..."
-"$PYTHON_CHECK_BIN" -m py_compile "$TARGET_DIR/telerixa.py" "$TARGET_DIR/i18n.py" "$TARGET_DIR/web_ui.py" "$TARGET_DIR/telerixa_core/__init__.py" "$TARGET_DIR/telerixa_core/constants.py" "$TARGET_DIR/telerixa_core/formatting.py" "$TARGET_DIR/telerixa_core/logging_setup.py" "$TARGET_DIR/telerixa_core/models.py" "$TARGET_DIR/telerixa_core/state.py"
+"$PYTHON_CHECK_BIN" -m py_compile "$TARGET_DIR/telerixa.py" "$TARGET_DIR/i18n.py" "$TARGET_DIR/web_ui.py" "$TARGET_DIR/telerixa_core/__init__.py" "$TARGET_DIR/telerixa_core/config.py" "$TARGET_DIR/telerixa_core/constants.py" "$TARGET_DIR/telerixa_core/delivery.py" "$TARGET_DIR/telerixa_core/discord_delivery.py" "$TARGET_DIR/telerixa_core/formatting.py" "$TARGET_DIR/telerixa_core/logging_setup.py" "$TARGET_DIR/telerixa_core/media_delivery.py" "$TARGET_DIR/telerixa_core/models.py" "$TARGET_DIR/telerixa_core/state.py" "$TARGET_DIR/telerixa_core/telegram_reader.py"
 
 rm -rf "$TMP_DIR"
 
