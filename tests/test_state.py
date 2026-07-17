@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -93,6 +94,127 @@ class StateStorageTests(unittest.TestCase):
 
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
+
+    def test_runtime_status_tracks_process_and_cycle_lifecycle(self):
+        state.mark_runtime_started(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            4321,
+            self.now_ts,
+            self.now_text,
+        )
+        runtime = state.get_runtime_status(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+        )
+        assert runtime is not None
+        self.assertEqual(runtime["status"], "running")
+        self.assertEqual(runtime["pid"], 4321)
+        self.assertIsNone(runtime["last_cycle_result"])
+
+        state.mark_runtime_cycle_started(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            self.now_ts + 10,
+            "2026-07-08T20:00:10+00:00",
+        )
+        state.mark_runtime_cycle_finished(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            "error",
+            "Discord unavailable",
+            self.now_ts + 20,
+            "2026-07-08T20:00:20+00:00",
+        )
+        runtime = state.get_runtime_status(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+        )
+        assert runtime is not None
+        self.assertEqual(runtime["last_cycle_result"], "error")
+        self.assertEqual(runtime["last_error"], "Discord unavailable")
+        self.assertEqual(runtime["heartbeat_ts"], self.now_ts + 20)
+
+        state.touch_runtime_heartbeat(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            4321,
+            self.now_ts + 30,
+            "2026-07-08T20:00:30+00:00",
+        )
+        state.mark_runtime_stopped(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            "stopped",
+            "",
+            self.now_ts + 40,
+            "2026-07-08T20:00:40+00:00",
+        )
+        runtime = state.get_runtime_status(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+        )
+        assert runtime is not None
+        self.assertEqual(runtime["status"], "stopped")
+        self.assertEqual(runtime["heartbeat_ts"], self.now_ts + 40)
+        self.assertEqual(runtime["last_error"], "Discord unavailable")
+
+    def test_new_runtime_start_clears_previous_cycle_state(self):
+        state.mark_runtime_started(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            100,
+            self.now_ts,
+            self.now_text,
+        )
+        state.mark_runtime_cycle_finished(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            "error",
+            "old error",
+            self.now_ts + 5,
+            "2026-07-08T20:00:05+00:00",
+        )
+
+        state.mark_runtime_started(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            200,
+            self.now_ts + 60,
+            "2026-07-08T20:01:00+00:00",
+        )
+        runtime = state.get_runtime_status(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+        )
+        assert runtime is not None
+        self.assertEqual(runtime["pid"], 200)
+        self.assertIsNone(runtime["last_cycle_result"])
+        self.assertIsNone(runtime["last_error"])
 
     def test_pending_queue_lifecycle(self):
         state.add_pending_message(
@@ -258,6 +380,178 @@ class StateStorageTests(unittest.TestCase):
             [("earlier-channel", 10), ("later-channel", 20)],
         )
 
+    def test_failed_album_archive_is_atomic_and_requeue_preserves_progress(self):
+        state.add_pending_message(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "demo",
+            10,
+            777,
+            "Discord unavailable",
+            self.now_ts,
+            self.now_text,
+            telegram_date_ts=900.0,
+        )
+        state.update_pending_delivery_progress(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "demo",
+            10,
+            next_chunk_index=2,
+            media_sent=True,
+            rendered_text="stable payload",
+        )
+        for message_id in (10, 11):
+            state.mark_processed_message(
+                self.db_file,
+                DB_TIMEOUT_SECONDS,
+                DB_BUSY_TIMEOUT_MS,
+                "demo",
+                message_id,
+                777,
+                "queued",
+                self.now_ts,
+                self.now_text,
+            )
+
+        archive_id = state.archive_pending_failure(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "demo",
+            10,
+            777,
+            [10, 11],
+            "Maximum attempts reached",
+            "max_attempts",
+            "retry queue",
+            3,
+            self.now_ts + 10,
+            "2026-07-08T20:00:10+00:00",
+        )
+
+        self.assertEqual(
+            state.get_pending_count(self.db_file, DB_TIMEOUT_SECONDS, DB_BUSY_TIMEOUT_MS),
+            0,
+        )
+        with state.connect_state_db(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+        ) as conn:
+            archived = conn.execute(
+                """
+                SELECT album_message_ids,
+                       failure_kind,
+                       attempts,
+                       telegram_date_ts,
+                       next_chunk_index,
+                       media_sent,
+                       rendered_text,
+                       status
+                FROM failed_deliveries
+                WHERE id = ?
+                """,
+                (archive_id,),
+            ).fetchone()
+        self.assertEqual(json.loads(archived[0]), [10, 11])
+        self.assertEqual(archived[1:], ("max_attempts", 3, 900.0, 2, 1, "stable payload", "open"))
+        for message_id in (10, 11):
+            self.assertEqual(
+                state.get_processed_message_state(
+                    self.db_file,
+                    DB_TIMEOUT_SECONDS,
+                    DB_BUSY_TIMEOUT_MS,
+                    "demo",
+                    message_id,
+                ),
+                ("failed", 777),
+            )
+
+        result = state.requeue_failed_delivery(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            archive_id,
+            self.now_ts + 20,
+            "2026-07-08T20:00:20+00:00",
+        )
+
+        self.assertEqual(result, "requeued")
+        with state.connect_state_db(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+        ) as conn:
+            pending = conn.execute(
+                """
+                SELECT attempts,
+                       telegram_date_ts,
+                       next_chunk_index,
+                       media_sent,
+                       rendered_text
+                FROM pending_messages
+                WHERE channel = 'demo' AND message_id = 10
+                """
+            ).fetchone()
+            archive_status = conn.execute(
+                "SELECT status FROM failed_deliveries WHERE id = ?",
+                (archive_id,),
+            ).fetchone()[0]
+        self.assertEqual(pending, (0, 900.0, 2, 1, "stable payload"))
+        self.assertEqual(archive_status, "requeued")
+        self.assertEqual(
+            state.requeue_failed_delivery(
+                self.db_file,
+                DB_TIMEOUT_SECONDS,
+                DB_BUSY_TIMEOUT_MS,
+                archive_id,
+                self.now_ts + 30,
+                "2026-07-08T20:00:30+00:00",
+            ),
+            "missing",
+        )
+
+    def test_failed_delivery_can_be_dismissed_without_deleting_history(self):
+        archive_id = state.archive_pending_failure(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "demo",
+            20,
+            None,
+            [20],
+            "Telegram message unavailable",
+            "unavailable",
+            "retry queue",
+            1,
+            self.now_ts,
+            self.now_text,
+        )
+
+        dismissed = state.dismiss_failed_delivery(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            archive_id,
+            self.now_ts + 10,
+            "2026-07-08T20:00:10+00:00",
+        )
+
+        self.assertTrue(dismissed)
+        with state.connect_state_db(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+        ) as conn:
+            row = conn.execute(
+                "SELECT status, resolved_at FROM failed_deliveries WHERE id = ?",
+                (archive_id,),
+            ).fetchone()
+        self.assertEqual(row, ("dismissed", "2026-07-08T20:00:10+00:00"))
+
     def test_transient_retry_does_not_consume_attempt_limit(self):
         bounded_attempts, bounded_retry_ts = state.calculate_retry_schedule(
             current_attempts=2,
@@ -376,6 +670,66 @@ class StateStorageTests(unittest.TestCase):
             ),
             ("sent", None),
         )
+
+    def test_existing_failed_processed_album_is_migrated_to_archive(self):
+        legacy_db = str(Path(self.temp_dir.name) / "legacy-failures.db")
+        with closing(sqlite3.connect(legacy_db)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE processed_messages (
+                    channel TEXT NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    grouped_id INTEGER,
+                    status TEXT NOT NULL,
+                    processed_at TEXT NOT NULL,
+                    processed_ts REAL NOT NULL,
+                    PRIMARY KEY (channel, message_id)
+                )
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO processed_messages (
+                    channel,
+                    message_id,
+                    grouped_id,
+                    status,
+                    processed_at,
+                    processed_ts
+                ) VALUES (?, ?, ?, 'failed', ?, ?)
+                """,
+                (
+                    ("demo", 30, 888, self.now_text, self.now_ts),
+                    ("demo", 31, 888, self.now_text, self.now_ts),
+                ),
+            )
+            conn.commit()
+
+        state.init_state_db(
+            legacy_db,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            self.now_ts,
+        )
+
+        with state.connect_state_db(
+            legacy_db,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT message_id,
+                       grouped_id,
+                       album_message_ids,
+                       failure_kind,
+                       status
+                FROM failed_deliveries
+                """
+            ).fetchone()
+        self.assertEqual(row[:2], (30, 888))
+        self.assertEqual(json.loads(row[2]), [30, 31])
+        self.assertEqual(row[3:], ("legacy", "open"))
 
     def test_existing_pending_table_gets_delivery_progress_columns(self):
         legacy_db = str(Path(self.temp_dir.name) / "legacy-state.db")

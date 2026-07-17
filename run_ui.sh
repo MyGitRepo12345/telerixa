@@ -5,6 +5,19 @@ cd "$(dirname "$0")"
 
 UI_URL="http://127.0.0.1:8765/"
 PYTHON_BIN=""
+SCRIPT_DIR="$(pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "$0")"
+
+if [ ! -t 0 ] && [ "${TELERIXA_VISIBLE_TERMINAL:-0}" != "1" ]; then
+  if command -v konsole >/dev/null 2>&1; then
+    konsole \
+      --workdir "$SCRIPT_DIR" \
+      --hold \
+      -e env TELERIXA_VISIBLE_TERMINAL=1 bash "$SCRIPT_PATH" \
+      >/dev/null 2>&1 &
+    exit 0
+  fi
+fi
 
 if command -v python3 >/dev/null 2>&1; then
   PYTHON_BIN="python3"
@@ -46,4 +59,4 @@ echo "Starting settings UI at $UI_URL"
 echo "Press Ctrl+C to stop."
 echo
 
-"$PYTHON_BIN" web_ui.py
+TELERIXA_OWNER_PID="$$" "$PYTHON_BIN" web_ui.py

@@ -19,10 +19,13 @@ class FakeState:
         self.failures = []
         self.deleted = []
         self.progress = []
+        self.archived = []
+        self.attempts_after = 1
 
     def actions(self):
         return DeliveryStateActions(
             add_pending_message=lambda *args: self.pending.append(args),
+            archive_pending_failure=lambda *args: self.archived.append(args),
             advance_last_seen_id=lambda *args: self.boundaries.append(args),
             delete_pending_message=lambda *args: self.deleted.append(args),
             get_processed_group_message_ids=lambda channel, grouped_id: [10, 11],
@@ -35,7 +38,7 @@ class FakeState:
 
     def mark_pending_failed(self, *args, **kwargs):
         self.failures.append((args, kwargs))
-        return 1
+        return self.attempts_after
 
 
 class DeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -110,14 +113,31 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(kept)
         self.assertIn("bad webhook", reason)
         self.assertEqual(attempts, 1)
-        self.assertEqual(self.state.deleted, [("demo", 10)])
-        self.assertEqual(
-            self.state.processed,
-            [
-                ("demo", 10, 777, "failed"),
-                ("demo", 11, 777, "failed"),
-            ],
+        self.assertFalse(self.state.deleted)
+        self.assertEqual(len(self.state.archived), 1)
+        archive_args = self.state.archived[0]
+        self.assertEqual(archive_args[:4], ("demo", 10, 777, [10, 11]))
+        self.assertEqual(archive_args[5:], ("terminal", "retry queue", 1))
+
+    async def test_max_attempts_archives_message_with_distinct_reason(self):
+        self.state.attempts_after = 3
+
+        kept, reason, attempts = await handle_pending_send_failure(
+            self.state.actions(),
+            self.logger,
+            self.settings,
+            "demo",
+            20,
+            None,
+            [20],
+            SendResult.retry("Discord unavailable"),
+            "fallback",
         )
+
+        self.assertFalse(kept)
+        self.assertEqual(attempts, 3)
+        self.assertIn("3", reason)
+        self.assertEqual(self.state.archived[0][5], "max_attempts")
 
 
 if __name__ == "__main__":

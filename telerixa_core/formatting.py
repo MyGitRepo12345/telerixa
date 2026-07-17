@@ -1,6 +1,9 @@
 import logging
+from bisect import bisect_left
 
 from i18n import tr
+from telethon.tl.types import MessageEntitySpoiler
+from .rich_messages import render_rich_message
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +60,72 @@ def format_blockquote(text):
     return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
 
 
+def _utf16_offset_to_index(boundaries, offset):
+    offset = max(0, min(int(offset), boundaries[-1]))
+    return min(bisect_left(boundaries, offset), len(boundaries) - 1)
+
+
+def format_spoilers(text, entities=None):
+    """Convert Telegram spoiler entities to Discord spoiler markup."""
+    if not text or not entities:
+        return text
+
+    text = str(text)
+    boundaries = [0]
+    for character in text:
+        boundaries.append(
+            boundaries[-1] + (2 if ord(character) > 0xFFFF else 1)
+        )
+
+    ranges = []
+    for entity in entities:
+        if not isinstance(entity, MessageEntitySpoiler):
+            continue
+
+        start_offset = max(0, int(entity.offset))
+        end_offset = start_offset + max(0, int(entity.length))
+        start = _utf16_offset_to_index(boundaries, start_offset)
+        end = _utf16_offset_to_index(boundaries, end_offset)
+        if end > start:
+            ranges.append((start, end))
+
+    if not ranges:
+        return text
+
+    merged_ranges = []
+    for start, end in sorted(ranges):
+        if merged_ranges and start <= merged_ranges[-1][1]:
+            previous_start, previous_end = merged_ranges[-1]
+            merged_ranges[-1] = (previous_start, max(previous_end, end))
+        else:
+            merged_ranges.append((start, end))
+
+    parts = []
+    cursor = 0
+    for start, end in merged_ranges:
+        parts.append(text[cursor:start])
+        parts.append(f"||{text[start:end]}||")
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def get_message_text(message):
+    if not message:
+        return ""
+
+    rich_message = getattr(message, "rich_message", None)
+    if rich_message is not None:
+        rich_text = render_rich_message(rich_message)
+        if rich_text:
+            return rich_text
+
+    return format_spoilers(
+        getattr(message, "text", "") or "",
+        getattr(message, "entities", None),
+    )
+
+
 async def get_reply_info(message, telegram_client=None):
     """Return Telegram reply/quote context when a post replies to another post."""
     reply_to = getattr(message, "reply_to", None)
@@ -101,10 +170,14 @@ async def get_reply_info(message, telegram_client=None):
     else:
         header = tr("telegram.reply_to", title=title)
 
-    reply_text = (
-        getattr(reply_to, "quote_text", None)
-        or (reply_message.text if reply_message else "")
-    )
+    quote_text = getattr(reply_to, "quote_text", None)
+    if quote_text:
+        reply_text = format_spoilers(
+            quote_text,
+            getattr(reply_to, "quote_entities", None),
+        )
+    else:
+        reply_text = get_message_text(reply_message)
     reply_text = (repair_mojibake(reply_text) or "").strip()
     if reply_text:
         return f"{header}\n\n{format_blockquote(reply_text)}"
@@ -112,8 +185,7 @@ async def get_reply_info(message, telegram_client=None):
     return header
 
 
-def split_text(text, limit):
-    """Split long text without cutting through paragraphs when possible."""
+def _split_plain_text(text, limit):
     if not text:
         return []
 
@@ -159,12 +231,47 @@ def split_text(text, limit):
     return chunks
 
 
+def _balance_spoiler_chunks(chunks):
+    chunks = list(chunks)
+    for index in range(len(chunks) - 1):
+        if chunks[index].endswith("|") and chunks[index + 1].startswith("|"):
+            chunks[index] = chunks[index][:-1]
+            chunks[index + 1] = f"|{chunks[index + 1]}"
+
+    balanced = []
+    spoiler_open = False
+    for chunk in chunks:
+        rendered = f"||{chunk}" if spoiler_open else chunk
+        if chunk.count("||") % 2:
+            spoiler_open = not spoiler_open
+        if spoiler_open:
+            rendered = f"{rendered}||"
+        if rendered:
+            balanced.append(rendered)
+    return balanced
+
+
+def split_text(text, limit):
+    """Split text while preserving paragraphs and balanced Discord spoilers."""
+    if not text or limit <= 0:
+        return []
+    if "||" not in text or limit <= 4:
+        return _split_plain_text(text, limit)
+
+    chunks = _split_plain_text(text, limit - 4)
+    return _balance_spoiler_chunks(chunks)
+
+
 def select_album_text_message(album_messages, fallback_message):
-    text_messages = [message for message in album_messages if message and message.text]
+    text_messages = [
+        message
+        for message in album_messages
+        if message and get_message_text(message)
+    ]
     if not text_messages:
         return fallback_message
 
-    return max(text_messages, key=lambda message: len(message.text or ""))
+    return max(text_messages, key=lambda message: len(get_message_text(message)))
 
 
 async def build_message_text(telegram_message, channel_name, text_message=None, telegram_client=None):
@@ -180,7 +287,8 @@ async def build_message_text(telegram_message, channel_name, text_message=None, 
     if reply_info:
         lines.append(reply_info)
 
-    if source_message.text:
-        lines.append(source_message.text)
+    source_text = get_message_text(source_message)
+    if source_text:
+        lines.append(source_text)
 
     return "\n\n".join(lines)

@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from i18n import tr
 from .constants import (
@@ -9,6 +9,7 @@ from .constants import (
     ALBUM_MESSAGES_CACHE_ATTR,
     CHANNEL_FETCH_CONCURRENCY,
 )
+from .rich_messages import has_rich_message
 
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class ChannelCollection:
     channel_order: int
     last_seen_id: Optional[int]
     latest_message_id: int
-    messages: list
+    messages: list[Any]
     has_older_forwardable: bool = False
 
 
@@ -28,7 +29,7 @@ class ChannelCollection:
 class CollectedPost:
     channel: str
     channel_order: int
-    message: object
+    message: Any
 
 
 def get_message_datetime(message, app_timezone):
@@ -45,7 +46,14 @@ async def get_latest_message_id(telegram_client, entity):
 
 
 def is_forwardable_message(message):
-    return bool(message and (message.text or message.media))
+    return bool(
+        message
+        and (
+            getattr(message, "text", None)
+            or getattr(message, "media", None)
+            or has_rich_message(message)
+        )
+    )
 
 
 async def collect_startup_tail(telegram_client, entity, last_seen_id, limit):
@@ -94,7 +102,7 @@ async def collect_channel(
     channel_order,
     last_seen_id,
     startup_limit=None,
-):
+) -> ChannelCollection:
     entity = await telegram_client.get_entity(f"@{channel}")
     latest_message_id = await get_latest_message_id(telegram_client, entity)
     messages = []
@@ -131,7 +139,7 @@ async def collect_channels(
     last_seen_ids,
     startup_limit=None,
     concurrency_limit=CHANNEL_FETCH_CONCURRENCY,
-):
+) -> list[tuple[str, ChannelCollection | Exception]]:
     if not channels:
         return []
 
@@ -153,12 +161,22 @@ async def collect_channels(
         collect_with_limit(channel, channel_order)
         for channel_order, channel in enumerate(channels)
     ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+    results: list[ChannelCollection | Exception] = []
+    for result in raw_results:
+        if isinstance(result, Exception):
+            results.append(result)
+        elif isinstance(result, BaseException):
+            raise result
+        else:
+            results.append(result)
     return list(zip(channels, results))
 
 
 def get_message_timestamp(message, fallback=None):
     message_date = getattr(message, "date", None)
+    if message_date is None:
+        return fallback
     try:
         return float(message_date.timestamp())
     except (AttributeError, TypeError, ValueError, OSError):

@@ -16,6 +16,11 @@ from .discord_delivery import (
 )
 from .formatting import build_message_text, select_album_text_message, split_text
 from .models import SendResult
+from .rich_messages import (
+    get_message_media_attachments,
+    get_rich_media_attachments,
+    has_rich_message,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -27,6 +32,35 @@ class MediaDeliverySettings:
     max_message_length: int
     file_limit_mb: int
     large_file_action: str
+
+
+def _media_attachment_key(attachment):
+    media = attachment.media
+    media_id = getattr(media, "id", None)
+    return (type(media), media_id if media_id is not None else id(media))
+
+
+def _collect_media_attachments(messages):
+    attachments = []
+    seen_keys = set()
+    for message in messages:
+        for attachment in get_message_media_attachments(message):
+            key = _media_attachment_key(attachment)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            attachments.append(attachment)
+    return attachments
+
+
+def _apply_spoiler_filename(file_path):
+    directory = os.path.dirname(file_path)
+    filename = os.path.basename(file_path)
+    if filename.startswith("SPOILER_"):
+        return file_path
+    spoiler_path = os.path.join(directory, f"SPOILER_{filename}")
+    os.replace(file_path, spoiler_path)
+    return spoiler_path
 
 
 async def send_to_discord(
@@ -57,6 +91,16 @@ async def send_to_discord(
 
         text = rendered_text
         if text is None:
+            if has_rich_message(text_message):
+                rich_message = text_message.rich_message
+                logger.info(
+                    tr(
+                        "media.rich_detected",
+                        message_id=text_message.id,
+                        blocks=len(getattr(rich_message, "blocks", []) or []),
+                        media=len(get_rich_media_attachments(rich_message)),
+                    )
+                )
             text = await build_message_text(
                 telegram_message,
                 channel_name,
@@ -92,61 +136,69 @@ async def send_to_discord(
         media_download_failed = False
         media_download_errors = []
 
-        if telegram_message.grouped_id:
+        media_messages = (
+            album_messages if telegram_message.grouped_id else [telegram_message]
+        )
+        media_attachments = _collect_media_attachments(media_messages)
+        if media_attachments:
             try:
                 temp_dir = tempfile.mkdtemp()
                 temp_dirs.append(temp_dir)
-                for message in album_messages:
-                    if message.media:
-                        try:
-                            file_path = await telegram_client.download_media(
-                                message.media,
-                                temp_dir,
-                            )
-                            if file_path:
-                                temp_files.append(file_path)
-                                media_files.append(file_path)
-                            else:
-                                media_download_failed = True
-                                logger.warning(tr("media.album_path_missing"))
-                        except Exception as error:
+                for attachment in media_attachments:
+                    try:
+                        file_path = await telegram_client.download_media(
+                            attachment.media,
+                            temp_dir,
+                        )
+                        if not file_path:
                             media_download_failed = True
+                            error = RuntimeError(
+                                tr(
+                                    "send.media_path_missing",
+                                    media_type=type(attachment.media).__name__,
+                                )
+                            )
                             media_download_errors.append(error)
                             logger.warning(
-                                tr("media.album_download_failed", error=error)
+                                tr(
+                                    "media.album_path_missing"
+                                    if telegram_message.grouped_id
+                                    else "media.path_missing",
+                                    media_type=type(attachment.media).__name__,
+                                )
                             )
-                if not media_files:
-                    media_download_failed = True
+                            continue
+                        if attachment.spoiler:
+                            file_path = _apply_spoiler_filename(file_path)
+                        temp_files.append(file_path)
+                        media_files.append(file_path)
+                    except Exception as error:
+                        media_download_failed = True
+                        media_download_errors.append(error)
+                        logger.warning(
+                            tr(
+                                "media.album_download_failed"
+                                if telegram_message.grouped_id
+                                else "media.download_failed",
+                                error=error,
+                            )
+                        )
             except Exception as error:
                 media_download_failed = True
                 media_download_errors.append(error)
-                logger.error(tr("media.album_processing_failed", error=error))
-
-        elif telegram_message.media:
-            try:
-                temp_dir = tempfile.mkdtemp()
-                temp_dirs.append(temp_dir)
-                file_path = await telegram_client.download_media(
-                    telegram_message.media,
-                    temp_dir,
+                logger.error(
+                    tr(
+                        "media.album_processing_failed"
+                        if telegram_message.grouped_id
+                        else "media.download_failed",
+                        error=error,
+                    )
                 )
-                if file_path:
-                    temp_files.append(file_path)
-                    media_files.append(file_path)
-                else:
-                    media_download_failed = True
-                    logger.warning(tr("media.path_missing"))
-            except Exception as error:
-                media_download_failed = True
-                media_download_errors.append(error)
-                logger.error(tr("media.download_failed", error=error))
 
         if media_download_failed:
             logger.warning(tr("media.partial_download"))
             if media_download_errors:
-                retry_result = retry_result_for_exception(media_download_errors[-1])
-                if not retry_result.count_attempt:
-                    return retry_result
+                return retry_result_for_exception(media_download_errors[-1])
             return SendResult.retry(tr("send.media_download_failed"))
 
         async with aiohttp.ClientSession() as session:

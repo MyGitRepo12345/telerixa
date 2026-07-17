@@ -14,12 +14,14 @@ class FakeMessage:
         media=None,
         grouped_id=None,
         date=None,
+        rich_message=None,
     ):
         self.id = message_id
         self.text = text
         self.media = media
         self.grouped_id = grouped_id
         self.date = date or datetime(2026, 7, 12, tzinfo=timezone.utc)
+        self.rich_message = rich_message
 
 
 class FakeTelegramClient:
@@ -70,7 +72,7 @@ class TelegramReaderTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         configure_language("en")
 
-    def test_forwardable_message_requires_text_or_media(self):
+    def test_forwardable_message_requires_supported_content(self):
         self.assertFalse(telegram_reader.is_forwardable_message(None))
         self.assertFalse(telegram_reader.is_forwardable_message(FakeMessage(1)))
         self.assertTrue(
@@ -78,6 +80,11 @@ class TelegramReaderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             telegram_reader.is_forwardable_message(FakeMessage(3, media=object()))
+        )
+        self.assertTrue(
+            telegram_reader.is_forwardable_message(
+                FakeMessage(4, rich_message=object())
+            )
         )
 
     def test_message_datetime_uses_configured_timezone(self):
@@ -201,6 +208,18 @@ class TelegramReaderTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(client.max_active_requests, 3)
+
+    async def test_channel_collection_propagates_child_cancellation(self):
+        class CancelledTelegramClient:
+            async def get_entity(self, _channel):
+                raise asyncio.CancelledError
+
+        with self.assertRaises(asyncio.CancelledError):
+            await telegram_reader.collect_channels(
+                CancelledTelegramClient(),
+                ["cancelled"],
+                {"cancelled": None},
+            )
 
     def test_merge_posts_is_global_chronological_and_deduplicates_album(self):
         base_time = datetime(2026, 7, 12, 10, 0, tzinfo=timezone.utc)

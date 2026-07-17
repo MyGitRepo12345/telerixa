@@ -104,6 +104,7 @@ class ConfigManagerTests(unittest.TestCase):
             )
         )
         update = manager.reload_if_changed()
+        assert update is not None
 
         self.assertIsNot(update.config, initial)
         self.assertIs(manager.current, update.config)

@@ -1,18 +1,31 @@
 ﻿from telethon import TelegramClient
 import asyncio
+import inspect
 import json
 from datetime import datetime
 from functools import partial
 import logging
 import os
 import sys
+from typing import Any, cast
 
 from i18n import configure_language, tr
 from telerixa_core.config import ConfigError, ConfigManager
 from telerixa_core.constants import (
     APP_NAME,
+    BOT_PID_FILE,
     CONFIG_FILE,
+    RUNTIME_HEARTBEAT_INTERVAL_SECONDS,
+    RUNTIME_SERVICE_NAME,
     VERSION as __version__,
+)
+from telerixa_core.lifecycle import (
+    AlreadyRunningError,
+    DetachedProcessError,
+    ProcessLifetimeMonitor,
+    ProcessLock,
+    ShutdownSignalHandlers,
+    require_attached_console,
 )
 from telerixa_core.discord_delivery import (
     notify_dropped_message,
@@ -26,7 +39,7 @@ from telerixa_core.delivery import (
     make_delivery_progress_callback as delivery_make_progress_callback,
     prepare_pending_delivery as delivery_prepare_pending_delivery,
 )
-from telerixa_core.logging_setup import setup_logging
+from telerixa_core.logging_setup import log_success, setup_logging
 from telerixa_core.media_delivery import (
     MediaDeliverySettings,
     send_to_discord as send_media_to_discord,
@@ -50,6 +63,13 @@ def as_send_result(value, fallback_error=None):
     if value:
         return SendResult.success()
     return SendResult.retry(fallback_error)
+
+
+async def await_telethon_call(value: Any) -> Any:
+    """Await Telethon's runtime-dependent sync/async return values."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def log_config_warning(config_warning):
@@ -124,7 +144,7 @@ def reload_config_if_changed():
     for warning in config_update.warnings:
         log_config_warning(warning)
     if config_update.changed_keys:
-        logger.info(tr("config.updated", keys=", ".join(config_update.changed_keys)))
+        log_success(logger, tr("config.updated", keys=", ".join(config_update.changed_keys)))
 
 
 async def sleep_with_config_reload(duration):
@@ -179,6 +199,101 @@ def init_state_db():
         DB_BUSY_TIMEOUT_MS,
         get_now_ts(),
     )
+
+
+def record_runtime_update(operation_name, callback, *args, log_failure=True):
+    try:
+        callback(
+            STATE_DB_FILE,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            *args,
+        )
+        return True
+    except Exception as e:
+        if log_failure:
+            logger.warning(
+                tr(
+                    "runtime.state_write_failed",
+                    operation=operation_name,
+                    error=e,
+                )
+            )
+        return False
+
+
+def record_runtime_started():
+    now_ts = get_now_ts()
+    return record_runtime_update(
+        "started",
+        state_store.mark_runtime_started,
+        RUNTIME_SERVICE_NAME,
+        os.getpid(),
+        now_ts,
+        format_ts(now_ts),
+    )
+
+
+def record_runtime_heartbeat(log_failure=True):
+    now_ts = get_now_ts()
+    return record_runtime_update(
+        "heartbeat",
+        state_store.touch_runtime_heartbeat,
+        RUNTIME_SERVICE_NAME,
+        os.getpid(),
+        now_ts,
+        format_ts(now_ts),
+        log_failure=log_failure,
+    )
+
+
+def record_runtime_cycle_started():
+    now_ts = get_now_ts()
+    return record_runtime_update(
+        "cycle_started",
+        state_store.mark_runtime_cycle_started,
+        RUNTIME_SERVICE_NAME,
+        now_ts,
+        format_ts(now_ts),
+    )
+
+
+def record_runtime_cycle_finished(result, error=""):
+    now_ts = get_now_ts()
+    return record_runtime_update(
+        "cycle_finished",
+        state_store.mark_runtime_cycle_finished,
+        RUNTIME_SERVICE_NAME,
+        result,
+        error,
+        now_ts,
+        format_ts(now_ts),
+    )
+
+
+def record_runtime_stopped(status="stopped", error=""):
+    now_ts = get_now_ts()
+    return record_runtime_update(
+        "stopped",
+        state_store.mark_runtime_stopped,
+        RUNTIME_SERVICE_NAME,
+        status,
+        error,
+        now_ts,
+        format_ts(now_ts),
+    )
+
+
+async def runtime_heartbeat_loop():
+    failure_reported = False
+    while True:
+        heartbeat_saved = record_runtime_heartbeat(
+            log_failure=not failure_reported,
+        )
+        if heartbeat_saved and failure_reported:
+            log_success(logger, tr("runtime.heartbeat_recovered"))
+        failure_reported = not heartbeat_saved
+        await asyncio.sleep(RUNTIME_HEARTBEAT_INTERVAL_SECONDS)
 
 
 def ensure_pending_message_columns(conn):
@@ -336,6 +451,34 @@ def mark_pending_failed(channel, message_id, error, count_attempt=True):
     return attempts
 
 
+def archive_pending_failure(
+    channel,
+    message_id,
+    grouped_id,
+    album_message_ids,
+    reason,
+    failure_kind,
+    source,
+    attempts,
+):
+    now_ts = get_now_ts()
+    return state_store.archive_pending_failure(
+        STATE_DB_FILE,
+        DB_TIMEOUT_SECONDS,
+        DB_BUSY_TIMEOUT_MS,
+        channel,
+        message_id,
+        grouped_id,
+        album_message_ids,
+        reason,
+        failure_kind,
+        source,
+        attempts,
+        now_ts,
+        format_ts(now_ts),
+    )
+
+
 def delete_pending_message(channel, message_id):
     state_store.delete_pending_message(
         STATE_DB_FILE,
@@ -397,6 +540,7 @@ def update_pending_delivery_progress(
 
 DELIVERY_STATE_ACTIONS = DeliveryStateActions(
     add_pending_message=add_pending_message,
+    archive_pending_failure=archive_pending_failure,
     advance_last_seen_id=advance_last_seen_id,
     delete_pending_message=delete_pending_message,
     get_processed_group_message_ids=get_processed_group_message_ids,
@@ -632,9 +776,12 @@ async def process_pending_messages():
     ) in pending_messages:
         try:
             entity = await telegram_client.get_entity(f"@{channel}")
-            message = await telegram_client.get_messages(entity, ids=int(message_id))
+            message = cast(
+                Any,
+                await telegram_client.get_messages(entity, ids=int(message_id)),
+            )
 
-            if not message or not (message.text or message.media):
+            if not telegram_reader.is_forwardable_message(message):
                 reason = tr("queue.message_unavailable", channel=channel, message_id=message_id)
                 logger.warning(reason)
                 delivery_drop_pending_message(
@@ -645,6 +792,8 @@ async def process_pending_messages():
                     grouped_id,
                     reason,
                     attempts,
+                    source="retry queue",
+                    failure_kind="unavailable",
                 )
                 await notify_dropped_message(
                     runtime_config.discord_webhook_url,
@@ -696,7 +845,8 @@ async def process_pending_messages():
                     mark_processed_message(channel, album_message_id, grouped_value, "sent")
                 delete_pending_message(channel, message_id)
                 delivered_count += 1
-                logger.info(
+                log_success(
+                    logger,
                     tr(
                         "queue.delivered",
                         channel=channel,
@@ -852,7 +1002,8 @@ async def process_collected_posts(collected_posts, last_seen_ids):
                     )
                 delete_pending_message(channel, message.id)
                 stats["sent"] += 1
-                logger.info(
+                log_success(
+                    logger,
                     tr(
                         "channel.album_processed",
                         channel=channel,
@@ -871,6 +1022,7 @@ async def process_collected_posts(collected_posts, last_seen_ids):
                     album_ids,
                     send_result,
                     tr("send.initial_album_failed"),
+                    source="initial delivery",
                 )
                 if kept:
                     stats["queued"] += 1
@@ -922,7 +1074,8 @@ async def process_collected_posts(collected_posts, last_seen_ids):
             mark_processed_message(channel, message.id, None, "sent")
             delete_pending_message(channel, message.id)
             stats["sent"] += 1
-            logger.info(
+            log_success(
+                logger,
                 tr(
                     "channel.message_processed",
                     channel=channel,
@@ -941,6 +1094,7 @@ async def process_collected_posts(collected_posts, last_seen_ids):
                 [message.id],
                 send_result,
                 tr("send.initial_message_failed"),
+                source="initial delivery",
             )
             if kept:
                 stats["queued"] += 1
@@ -1092,8 +1246,11 @@ async def check_telegram_news():
         else:
             logger.info(tr("channel.all_checked_empty", time=current_time))
 
+        return ""
+
     except Exception as e:
         logger.error(tr("channel.check_error", error=e))
+        return str(e)
 
 
 # ===== DISCORD DELIVERY =====
@@ -1134,6 +1291,9 @@ async def send_to_discord(
 
 async def main():
     config_snapshot = runtime_config
+    heartbeat_task = None
+    runtime_tracking_started = False
+    terminal_error = ""
     logger.info(tr("app.starting", app_name=APP_NAME, version=__version__))
     logger.info(
         tr(
@@ -1151,38 +1311,54 @@ async def main():
             try:
                 await telegram_client.connect()
                 if await telegram_client.is_user_authorized():
-                    logger.info(tr("app.saved_session_authorized"))
+                    log_success(logger, tr("app.saved_session_authorized"))
                 else:
                     logger.info(tr("app.saved_session_invalid"))
-                    await telegram_client.start()
+                    await await_telethon_call(telegram_client.start())
             except Exception as e:
                 logger.error(tr("app.saved_session_error", error=e))
                 raise
         else:
             logger.info(tr("app.no_saved_session"))
-            await telegram_client.start()
+            await await_telethon_call(telegram_client.start())
 
         init_state_db()
+        runtime_tracking_started = True
+        record_runtime_started()
+        heartbeat_task = asyncio.create_task(
+            runtime_heartbeat_loop(),
+            name="telerixa-runtime-heartbeat",
+        )
         migrate_legacy_seen_messages()
 
         await catch_up_channels_on_start()
-        logger.info(tr("app.startup_sync_done"))
+        log_success(logger, tr("app.startup_sync_done"))
 
-        logger.info(tr("app.forwarder_running"))
+        log_success(logger, tr("app.forwarder_running"))
         print("-" * 50)
 
         retry_count = 0
         while True:
+            record_runtime_cycle_started()
             try:
                 reload_config_if_changed()
                 await process_pending_messages()
-                await check_telegram_news()
+                check_error = await check_telegram_news()
+                if check_error:
+                    record_runtime_cycle_finished("error", check_error)
+                else:
+                    record_runtime_cycle_finished("ok")
                 retry_count = 0
                 reload_config_if_changed()
                 await sleep_with_config_reload(runtime_config.check_interval)
+            except asyncio.CancelledError:
+                record_runtime_cycle_finished("interrupted")
+                raise
             except KeyboardInterrupt:
+                record_runtime_cycle_finished("interrupted")
                 break
             except Exception as e:
+                record_runtime_cycle_finished("error", str(e))
                 if "database is locked" in str(e).lower():
                     retry_count += 1
                     await sleep_with_config_reload(min(5 * retry_count, 30))
@@ -1190,12 +1366,52 @@ async def main():
                     logger.error(tr("app.main_loop_error", error=e))
                     await sleep_with_config_reload(runtime_config.check_interval)
     except Exception as e:
+        terminal_error = str(e)
         logger.exception(tr("app.telegram_start_error", error=e))
         raise
+    finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        if runtime_tracking_started:
+            record_runtime_stopped(
+                status="failed" if terminal_error else "stopped",
+                error=terminal_error,
+            )
+        if telegram_client.is_connected():
+            try:
+                await await_telethon_call(telegram_client.disconnect())
+            except Exception as e:
+                logger.warning(tr("app.telegram_disconnect_error", error=e))
+
+
+def run():
+    lifetime_monitor = None
+    try:
+        require_attached_console()
+        pid_file = os.environ.get("TELERIXA_BOT_PID_FILE", BOT_PID_FILE)
+        with ProcessLock(pid_file, APP_NAME):
+            lifetime_monitor = ProcessLifetimeMonitor()
+            with ShutdownSignalHandlers(), lifetime_monitor:
+                asyncio.run(main())
+    except AlreadyRunningError as e:
+        logger.error(tr("app.already_running", pid=e.pid))
+        return 1
+    except DetachedProcessError as e:
+        logger.error(tr("app.detached_start_refused", error=e))
+        return 1
+    except KeyboardInterrupt:
+        if lifetime_monitor is not None and lifetime_monitor.reason:
+            logger.warning(
+                tr("app.owner_stopped", reason=lifetime_monitor.reason)
+            )
+        else:
+            logger.info(tr("app.stopped_by_user"))
+    return 0
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info(tr("app.stopped_by_user"))
+    raise SystemExit(run())

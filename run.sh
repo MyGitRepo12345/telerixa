@@ -6,6 +6,19 @@ cd "$(dirname "$0")"
 APP_NAME="Telerixa"
 VENV_DIR=".venv-linux"
 PYTHON_BIN=""
+SCRIPT_DIR="$(pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename "$0")"
+
+if [ ! -t 0 ] && [ "${TELERIXA_VISIBLE_TERMINAL:-0}" != "1" ]; then
+  if command -v konsole >/dev/null 2>&1; then
+    konsole \
+      --workdir "$SCRIPT_DIR" \
+      --hold \
+      -e env TELERIXA_VISIBLE_TERMINAL=1 bash "$SCRIPT_PATH" \
+      >/dev/null 2>&1 &
+    exit 0
+  fi
+fi
 
 echo "Starting $APP_NAME"
 echo
@@ -123,7 +136,7 @@ echo "Press Ctrl+C to stop."
 echo
 
 set +e
-python "$(pwd)/telerixa.py"
+TELERIXA_OWNER_PID="$$" python "$(pwd)/telerixa.py"
 BOT_EXIT_CODE=$?
 set -e
 

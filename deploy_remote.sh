@@ -4,7 +4,7 @@ set -eu
 TARGET_DIR="${1:-}"
 TMP_DIR="${2:-/home/deck/.telerixa_deploy}"
 START_BOT="${3:-1}"
-DEPLOY_REMOTE_VERSION="20260715-telerixa-v0.3.0"
+DEPLOY_REMOTE_VERSION="20260716-lifecycle-v1"
 
 fail() {
   echo "ERROR: $1" >&2
@@ -16,13 +16,51 @@ stop_target_processes() {
   pids="$(pgrep -f "$process_pattern" 2>/dev/null || true)"
   [ -n "$pids" ] || return 0
 
-  echo "$pids" | while IFS= read -r pid; do
+  target_pids=""
+  for pid in $pids; do
     [ -n "$pid" ] || continue
     process_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
     if [ "$process_cwd" = "$TARGET_DIR" ]; then
       kill "$pid" 2>/dev/null || true
+      target_pids="$target_pids $pid"
     fi
   done
+
+  [ -n "$target_pids" ] || return 0
+  wait_attempt=0
+  while [ "$wait_attempt" -lt 5 ]; do
+    remaining_pids=""
+    for pid in $target_pids; do
+      process_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+      if kill -0 "$pid" 2>/dev/null && [ "$process_cwd" = "$TARGET_DIR" ]; then
+        remaining_pids="$remaining_pids $pid"
+      fi
+    done
+    [ -z "$remaining_pids" ] && return 0
+    target_pids="$remaining_pids"
+    wait_attempt=$((wait_attempt + 1))
+    sleep 1
+  done
+
+  for pid in $target_pids; do
+    process_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    if [ "$process_cwd" = "$TARGET_DIR" ]; then
+      echo "Process $pid did not stop gracefully; sending SIGKILL."
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+target_process_running() {
+  process_pattern="$1"
+  pids="$(pgrep -f "$process_pattern" 2>/dev/null || true)"
+  for pid in $pids; do
+    process_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    if [ "$process_cwd" = "$TARGET_DIR" ]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 start_bot_in_konsole() {
@@ -32,6 +70,11 @@ start_bot_in_konsole() {
   if ! command -v konsole >/dev/null 2>&1; then
     echo "konsole command was not found." >> "$KONSOLE_START_LOG"
     return 1
+  fi
+
+  konsole_separate_arg=""
+  if konsole --help 2>&1 | grep -q -- "--separate"; then
+    konsole_separate_arg="--separate"
   fi
 
   uid="$(id -u)"
@@ -112,9 +155,9 @@ start_bot_in_konsole() {
         --setenv=XDG_RUNTIME_DIR="$runtime_dir" \
         --setenv=DBUS_SESSION_BUS_ADDRESS="$dbus_addr" \
         --setenv=XAUTHORITY="$xauthority_value" \
-        konsole --workdir "$TARGET_DIR" --hold -e bash -lc './run.sh' >> "$KONSOLE_START_LOG" 2>&1; then
+        konsole $konsole_separate_arg --workdir "$TARGET_DIR" --hold -e bash -lc './run.sh' >> "$KONSOLE_START_LOG" 2>&1; then
       sleep 2
-      if pgrep -af "[r]un[.]sh" >/dev/null 2>&1 || pgrep -af "telerixa[.]py" >/dev/null 2>&1; then
+      if target_process_running "[r]un[.]sh" || target_process_running "telerixa[.]py"; then
         return 0
       fi
 
@@ -148,7 +191,7 @@ start_bot_in_konsole() {
         XDG_RUNTIME_DIR="$runtime_dir" \
         DBUS_SESSION_BUS_ADDRESS="$dbus_addr" \
         XAUTHORITY="$xauthority_value" \
-        konsole --workdir "$TARGET_DIR" --hold -e bash -lc './run.sh' >> "$KONSOLE_START_LOG" 2>&1 &
+        konsole $konsole_separate_arg --workdir "$TARGET_DIR" --hold -e bash -lc './run.sh' >> "$KONSOLE_START_LOG" 2>&1 &
     else
       env \
         QT_QPA_PLATFORM="$qt_platform" \
@@ -157,12 +200,12 @@ start_bot_in_konsole() {
         XDG_RUNTIME_DIR="$runtime_dir" \
         DBUS_SESSION_BUS_ADDRESS="$dbus_addr" \
         XAUTHORITY="$xauthority_value" \
-        konsole --workdir "$TARGET_DIR" --hold -e bash -lc './run.sh' >> "$KONSOLE_START_LOG" 2>&1 &
+        konsole $konsole_separate_arg --workdir "$TARGET_DIR" --hold -e bash -lc './run.sh' >> "$KONSOLE_START_LOG" 2>&1 &
     fi
   )
 
   sleep 1
-  if pgrep -af "[r]un[.]sh" >/dev/null 2>&1 || pgrep -af "telerixa[.]py" >/dev/null 2>&1; then
+  if target_process_running "[r]un[.]sh" || target_process_running "telerixa[.]py"; then
     return 0
   fi
 
@@ -189,11 +232,14 @@ done
 [ -f "$TMP_DIR/telerixa_core/config.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/config.py"
 [ -f "$TMP_DIR/telerixa_core/constants.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/constants.py"
 [ -f "$TMP_DIR/telerixa_core/delivery.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/delivery.py"
+[ -f "$TMP_DIR/telerixa_core/diagnostics.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/diagnostics.py"
 [ -f "$TMP_DIR/telerixa_core/discord_delivery.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/discord_delivery.py"
 [ -f "$TMP_DIR/telerixa_core/formatting.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/formatting.py"
+[ -f "$TMP_DIR/telerixa_core/lifecycle.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/lifecycle.py"
 [ -f "$TMP_DIR/telerixa_core/logging_setup.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/logging_setup.py"
 [ -f "$TMP_DIR/telerixa_core/media_delivery.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/media_delivery.py"
 [ -f "$TMP_DIR/telerixa_core/models.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/models.py"
+[ -f "$TMP_DIR/telerixa_core/rich_messages.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/rich_messages.py"
 [ -f "$TMP_DIR/telerixa_core/state.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/state.py"
 [ -f "$TMP_DIR/telerixa_core/telegram_reader.py" ] || fail "Missing staged file: $TMP_DIR/telerixa_core/telegram_reader.py"
 
@@ -206,7 +252,7 @@ else
 fi
 
 echo "Validating staged Python syntax on Steam Deck..."
-"$PYTHON_CHECK_BIN" -m py_compile "$TMP_DIR/telerixa.py" "$TMP_DIR/i18n.py" "$TMP_DIR/web_ui.py" "$TMP_DIR/telerixa_core/__init__.py" "$TMP_DIR/telerixa_core/config.py" "$TMP_DIR/telerixa_core/constants.py" "$TMP_DIR/telerixa_core/delivery.py" "$TMP_DIR/telerixa_core/discord_delivery.py" "$TMP_DIR/telerixa_core/formatting.py" "$TMP_DIR/telerixa_core/logging_setup.py" "$TMP_DIR/telerixa_core/media_delivery.py" "$TMP_DIR/telerixa_core/models.py" "$TMP_DIR/telerixa_core/state.py" "$TMP_DIR/telerixa_core/telegram_reader.py"
+"$PYTHON_CHECK_BIN" -m py_compile "$TMP_DIR/telerixa.py" "$TMP_DIR/i18n.py" "$TMP_DIR/web_ui.py" "$TMP_DIR/telerixa_core/__init__.py" "$TMP_DIR/telerixa_core/config.py" "$TMP_DIR/telerixa_core/constants.py" "$TMP_DIR/telerixa_core/delivery.py" "$TMP_DIR/telerixa_core/diagnostics.py" "$TMP_DIR/telerixa_core/discord_delivery.py" "$TMP_DIR/telerixa_core/formatting.py" "$TMP_DIR/telerixa_core/lifecycle.py" "$TMP_DIR/telerixa_core/logging_setup.py" "$TMP_DIR/telerixa_core/media_delivery.py" "$TMP_DIR/telerixa_core/models.py" "$TMP_DIR/telerixa_core/rich_messages.py" "$TMP_DIR/telerixa_core/state.py" "$TMP_DIR/telerixa_core/telegram_reader.py"
 
 echo "Stopping running bot/UI processes if they exist..."
 stop_target_processes "[p]ython[0-9.]* .*telerixa[.]py"
@@ -253,7 +299,7 @@ rm -f "$TARGET_DIR/Script.py"
 chmod +x "$TARGET_DIR/run.sh" "$TARGET_DIR/run_ui.sh"
 
 echo "Validating Python syntax on Steam Deck..."
-"$PYTHON_CHECK_BIN" -m py_compile "$TARGET_DIR/telerixa.py" "$TARGET_DIR/i18n.py" "$TARGET_DIR/web_ui.py" "$TARGET_DIR/telerixa_core/__init__.py" "$TARGET_DIR/telerixa_core/config.py" "$TARGET_DIR/telerixa_core/constants.py" "$TARGET_DIR/telerixa_core/delivery.py" "$TARGET_DIR/telerixa_core/discord_delivery.py" "$TARGET_DIR/telerixa_core/formatting.py" "$TARGET_DIR/telerixa_core/logging_setup.py" "$TARGET_DIR/telerixa_core/media_delivery.py" "$TARGET_DIR/telerixa_core/models.py" "$TARGET_DIR/telerixa_core/state.py" "$TARGET_DIR/telerixa_core/telegram_reader.py"
+"$PYTHON_CHECK_BIN" -m py_compile "$TARGET_DIR/telerixa.py" "$TARGET_DIR/i18n.py" "$TARGET_DIR/web_ui.py" "$TARGET_DIR/telerixa_core/__init__.py" "$TARGET_DIR/telerixa_core/config.py" "$TARGET_DIR/telerixa_core/constants.py" "$TARGET_DIR/telerixa_core/delivery.py" "$TARGET_DIR/telerixa_core/diagnostics.py" "$TARGET_DIR/telerixa_core/discord_delivery.py" "$TARGET_DIR/telerixa_core/formatting.py" "$TARGET_DIR/telerixa_core/lifecycle.py" "$TARGET_DIR/telerixa_core/logging_setup.py" "$TARGET_DIR/telerixa_core/media_delivery.py" "$TARGET_DIR/telerixa_core/models.py" "$TARGET_DIR/telerixa_core/rich_messages.py" "$TARGET_DIR/telerixa_core/state.py" "$TARGET_DIR/telerixa_core/telegram_reader.py"
 
 rm -rf "$TMP_DIR"
 

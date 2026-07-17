@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 import json
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
@@ -37,7 +37,7 @@ class RuntimeConfig:
     check_interval: int
     max_message_length: int
     timezone_name: str
-    app_timezone: object
+    app_timezone: tzinfo
     discord_file_limit_mb: int
     large_file_action: str
     state_db_file: str
@@ -95,11 +95,11 @@ def _normalize_channels(value, fallback):
     return tuple(channels)
 
 
-def _load_timezone(timezone_name):
+def _load_timezone(timezone_name) -> Tuple[tzinfo, Optional[ConfigWarning]]:
     try:
         return ZoneInfo(timezone_name), None
     except (ZoneInfoNotFoundError, ValueError, TypeError):
-        fallback_timezone = datetime.now().astimezone().tzinfo
+        fallback_timezone = datetime.now().astimezone().tzinfo or timezone.utc
         return fallback_timezone, ConfigWarning("timezone_not_found", timezone_name)
 
 

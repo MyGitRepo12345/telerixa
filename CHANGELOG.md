@@ -8,6 +8,45 @@ This project follows semantic versioning while it is pre-1.0:
 - Minor: new user-visible features, settings, UI changes, or behavior changes.
 - Major: reserved for the first stable `1.0.0` release.
 
+## [Unreleased]
+
+## [0.4.0] - 2026-07-17
+
+### Added
+
+- Added separate Overview, Settings, and Logs views to the local web UI.
+- Added a live operational dashboard with bot heartbeat, SQLite state, delivery totals, due retries, channel checkpoints, and automatic refreshes.
+- Added per-message retry controls with a visible pending state that prevents duplicate manual requests.
+- Added a persistent failed-delivery archive with source links, saved progress, manual requeue, dismissal, and retained resolution history.
+- Added on-demand diagnostics for SQLite integrity, Discord webhook access, Telegram session state, disk capacity, and FFmpeg availability.
+- Added native Telegram rich-message rendering for structured text, lists, checklists, quotes, code, tables, formulas, details, maps, inline formatting, and ordered media.
+- Added Telegram-to-Discord spoiler conversion for posts, captions, replies, quoted text, and rich-media attachments.
+- Added a dedicated `SUCCESS` log level, colored terminal output, and color-coded web UI logs while keeping log files plain text.
+- Added PID-based single-instance protection and owner-console lifetime monitoring for the bot and settings UI.
+- Added GitHub Actions CI on Windows and Ubuntu with regression tests and a pinned shared Pyright runner.
+- Added regression coverage for dashboard actions, diagnostics, process lifecycle, rich messages, launchers, and concurrent collection cancellation.
+
+### Changed
+
+- Upgraded Telethon to `1.44.0` (Telegram API layer 227) for native rich-message forwarding.
+- Failed Telegram albums are grouped into a single dashboard row.
+- Queue clearing now requires explicit browser confirmation.
+- Terminal failures and exhausted retries now move from pending state to the archive in one SQLite transaction.
+- Manual archive retries reset the attempt budget while preserving partial-delivery progress.
+- Long Discord messages now keep spoiler markers balanced across message chunks.
+- Bot and UI shutdown now handle termination signals and release runtime resources cleanly.
+- Steam Deck deployment now waits for graceful process termination before a scoped forced stop and validates the expanded modular package.
+
+### Fixed
+
+- Repaired the Windows bot launcher and added clear startup validation and exit diagnostics.
+- Fixed bot or settings UI processes remaining alive after their console window was closed, including orphaned UI processes holding port `8765`.
+- Fixed non-file Telegram media such as link previews and giveaways entering endless media-download retries.
+- Failed downloads of real Telegram files now preserve the concrete error in the retry queue.
+- Fixed SteamOS launchers doing nothing visible when opened from a file manager without an attached terminal.
+- Fixed a cancelled channel task being treated as a successful collection result and causing a secondary attribute error.
+- Fixed native rich-only posts with empty fallback text/media being skipped during collection or discarded from the retry queue.
+
 ## [0.3.0] - 2026-07-15
 
 ### Added

@@ -8,6 +8,7 @@ from .discord_delivery import notify_dropped_message
 @dataclass(frozen=True)
 class DeliveryStateActions:
     add_pending_message: Callable
+    archive_pending_failure: Callable
     advance_last_seen_id: Callable
     delete_pending_message: Callable
     get_processed_group_message_ids: Callable
@@ -43,20 +44,23 @@ def drop_pending_message(
     attempts,
     album_ids=None,
     source="retry queue",
+    failure_kind="terminal",
 ):
     if album_ids is None and grouped_id:
         album_ids = actions.get_processed_group_message_ids(channel, grouped_id)
     album_ids = album_ids or [int(message_id)]
     grouped_value = grouped_id if grouped_id else None
 
-    actions.delete_pending_message(channel, message_id)
-    for album_message_id in album_ids:
-        actions.mark_processed_message(
-            channel,
-            album_message_id,
-            grouped_value,
-            "failed",
-        )
+    archive_id = actions.archive_pending_failure(
+        channel,
+        message_id,
+        grouped_value,
+        album_ids,
+        reason,
+        failure_kind,
+        source,
+        attempts,
+    )
 
     log_discarded_message(
         logger,
@@ -66,6 +70,8 @@ def drop_pending_message(
         attempts,
         source,
     )
+    if archive_id is not None:
+        logger.error(tr("discard.archived", archive_id=archive_id))
 
 
 def prepare_pending_delivery(
@@ -153,6 +159,7 @@ async def handle_pending_send_failure(
             error=error_text,
         )
     )
+    failure_kind = "terminal" if send_result.terminal else "max_attempts"
     drop_pending_message(
         actions,
         logger,
@@ -161,8 +168,9 @@ async def handle_pending_send_failure(
         grouped_id,
         reason,
         attempts_after,
-        album_ids,
-        source,
+        album_ids=album_ids,
+        source=source,
+        failure_kind=failure_kind,
     )
     await notify_dropped_message(
         settings.webhook_url,
