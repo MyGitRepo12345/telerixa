@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from i18n import configure_language
 from telethon.tl import types
-from telerixa_core import media_delivery
+from telerixa_core import media_delivery, transcoding
 from telerixa_core.models import SendResult
 
 
@@ -249,6 +249,279 @@ class MediaDeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(spoiler_path.name, "SPOILER_photo.jpg")
             self.assertTrue(spoiler_path.exists())
             self.assertFalse(source_path.exists())
+
+    async def test_oversized_video_is_transcoded_and_uploaded(self):
+        telegram_client = FakeTelegramClient()
+        created_paths = []
+
+        async def download_media(media, directory):
+            source_path = Path(directory, "source.mp4")
+            source_path.write_bytes(b"x" * (1024 * 1024 + 1))
+            created_paths.append(source_path)
+            return str(source_path)
+
+        async def transcode_video(
+            input_path,
+            output_dir,
+            target_limit_mb,
+            preset,
+            timeout_seconds,
+        ):
+            output_path = Path(output_dir, "converted.mp4")
+            output_path.write_bytes(b"converted")
+            created_paths.append(output_path)
+            return transcoding.TranscodeResult(
+                success=True,
+                output_path=str(output_path),
+                source_size=1024 * 1024 + 1,
+                output_size=len(b"converted"),
+                duration_seconds=12.5,
+                attempts=1,
+            )
+
+        telegram_client.download_media.side_effect = download_media
+        settings = media_delivery.MediaDeliverySettings(
+            webhook_url="https://example.invalid/webhook",
+            max_message_length=2000,
+            file_limit_mb=1,
+            large_file_action="compress_then_text",
+            transcode_preset="fast",
+            transcode_timeout_seconds=300,
+        )
+        session = RecordingClientSession()
+        attachment = SimpleNamespace(media=object(), spoiler=False)
+
+        with (
+            patch.object(
+                media_delivery,
+                "_collect_media_attachments",
+                return_value=[attachment],
+            ),
+            patch.object(
+                media_delivery,
+                "transcode_video",
+                side_effect=transcode_video,
+            ) as transcode_mock,
+            patch.object(
+                media_delivery.aiohttp,
+                "ClientSession",
+                return_value=session,
+            ),
+        ):
+            result = await media_delivery.send_to_discord(
+                telegram_client,
+                FakeMessage(),
+                "demo",
+                settings,
+                get_album_messages=AsyncMock(),
+                get_message_datetime=lambda message: message.date,
+                rendered_text="Telegram post: https://t.me/demo/10",
+            )
+
+        self.assertTrue(result)
+        transcode_mock.assert_awaited_once()
+        self.assertEqual(len(session.calls), 1)
+        self.assertTrue(all(not path.exists() for path in created_paths))
+
+    async def test_transcode_failure_sends_text_link_without_queue_retry(self):
+        telegram_client = FakeTelegramClient()
+
+        async def download_media(media, directory):
+            source_path = Path(directory, "source.mp4")
+            source_path.write_bytes(b"x" * (1024 * 1024 + 1))
+            return str(source_path)
+
+        telegram_client.download_media.side_effect = download_media
+        settings = media_delivery.MediaDeliverySettings(
+            webhook_url="https://example.invalid/webhook",
+            max_message_length=2000,
+            file_limit_mb=1,
+            large_file_action="compress_then_text",
+        )
+        send_chunks = AsyncMock(return_value=SendResult.success())
+        attachment = SimpleNamespace(media=object(), spoiler=False)
+
+        with (
+            patch.object(
+                media_delivery,
+                "_collect_media_attachments",
+                return_value=[attachment],
+            ),
+            patch.object(
+                media_delivery,
+                "transcode_video",
+                AsyncMock(
+                    return_value=transcoding.TranscodeResult(
+                        success=False,
+                        error="ffmpeg missing",
+                    )
+                ),
+            ),
+            patch.object(media_delivery, "send_text_chunks", send_chunks),
+            patch.object(
+                media_delivery.aiohttp,
+                "ClientSession",
+                return_value=FakeClientSession(),
+            ),
+        ):
+            result = await media_delivery.send_to_discord(
+                telegram_client,
+                FakeMessage(),
+                "demo",
+                settings,
+                get_album_messages=AsyncMock(),
+                get_message_datetime=lambda message: message.date,
+                rendered_text="Telegram post: https://t.me/demo/10",
+            )
+
+        self.assertTrue(result)
+        send_chunks.assert_awaited_once()
+
+    async def test_discord_failure_after_transcode_remains_transient_retry(self):
+        telegram_client = FakeTelegramClient()
+
+        async def download_media(media, directory):
+            source_path = Path(directory, "source.mp4")
+            source_path.write_bytes(b"x" * (1024 * 1024 + 1))
+            return str(source_path)
+
+        async def transcode_video(
+            input_path,
+            output_dir,
+            target_limit_mb,
+            preset,
+            timeout_seconds,
+        ):
+            output_path = Path(output_dir, "converted.mp4")
+            output_path.write_bytes(b"converted")
+            return transcoding.TranscodeResult(
+                success=True,
+                output_path=str(output_path),
+                source_size=1024 * 1024 + 1,
+                output_size=len(b"converted"),
+                duration_seconds=12.5,
+                attempts=1,
+            )
+
+        telegram_client.download_media.side_effect = download_media
+        settings = media_delivery.MediaDeliverySettings(
+            webhook_url="https://example.invalid/webhook",
+            max_message_length=2000,
+            file_limit_mb=1,
+            large_file_action="compress_then_text",
+        )
+        session = RecordingClientSession(status=503)
+        attachment = SimpleNamespace(media=object(), spoiler=False)
+
+        with (
+            patch.object(
+                media_delivery,
+                "_collect_media_attachments",
+                return_value=[attachment],
+            ),
+            patch.object(
+                media_delivery,
+                "transcode_video",
+                side_effect=transcode_video,
+            ),
+            patch.object(
+                media_delivery.aiohttp,
+                "ClientSession",
+                return_value=session,
+            ),
+        ):
+            result = await media_delivery.send_to_discord(
+                telegram_client,
+                FakeMessage(),
+                "demo",
+                settings,
+                get_album_messages=AsyncMock(),
+                get_message_datetime=lambda message: message.date,
+                rendered_text="Telegram post: https://t.me/demo/10",
+            )
+
+        self.assertFalse(result)
+        self.assertFalse(result.terminal)
+        self.assertFalse(result.count_attempt)
+        self.assertIn("503", result.error)
+
+    async def test_only_oversized_video_is_transcoded_in_mixed_media(self):
+        telegram_client = FakeTelegramClient()
+        download_count = 0
+
+        async def download_media(media, directory):
+            nonlocal download_count
+            download_count += 1
+            if download_count == 1:
+                path = Path(directory, "photo.jpg")
+                path.write_bytes(b"photo")
+            else:
+                path = Path(directory, "video.mp4")
+                path.write_bytes(b"x" * (1024 * 1024 + 1))
+            return str(path)
+
+        async def transcode_video(
+            input_path,
+            output_dir,
+            target_limit_mb,
+            preset,
+            timeout_seconds,
+        ):
+            output_path = Path(output_dir, "converted.mp4")
+            output_path.write_bytes(b"converted")
+            return transcoding.TranscodeResult(
+                success=True,
+                output_path=str(output_path),
+                source_size=1024 * 1024 + 1,
+                output_size=len(b"converted"),
+                duration_seconds=10,
+                attempts=1,
+            )
+
+        telegram_client.download_media.side_effect = download_media
+        settings = media_delivery.MediaDeliverySettings(
+            webhook_url="https://example.invalid/webhook",
+            max_message_length=2000,
+            file_limit_mb=1,
+            large_file_action="compress_then_text",
+        )
+        session = RecordingClientSession()
+        attachments = [
+            SimpleNamespace(media=object(), spoiler=False),
+            SimpleNamespace(media=object(), spoiler=False),
+        ]
+
+        with (
+            patch.object(
+                media_delivery,
+                "_collect_media_attachments",
+                return_value=attachments,
+            ),
+            patch.object(
+                media_delivery,
+                "transcode_video",
+                side_effect=transcode_video,
+            ) as transcode_mock,
+            patch.object(
+                media_delivery.aiohttp,
+                "ClientSession",
+                return_value=session,
+            ),
+        ):
+            result = await media_delivery.send_to_discord(
+                telegram_client,
+                FakeMessage(),
+                "demo",
+                settings,
+                get_album_messages=AsyncMock(),
+                get_message_datetime=lambda message: message.date,
+                rendered_text="Telegram post: https://t.me/demo/10",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(telegram_client.download_media.await_count, 2)
+        transcode_mock.assert_awaited_once()
+        self.assertEqual(len(session.calls), 1)
 
 
 if __name__ == "__main__":

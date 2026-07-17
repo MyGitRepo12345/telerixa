@@ -34,6 +34,8 @@ class RuntimeConfigTests(unittest.TestCase):
                 MAX_MESSAGE_LENGTH=0,
                 DISCORD_FILE_LIMIT_MB="50",
                 LARGE_FILE_ACTION="invalid-action",
+                VIDEO_TRANSCODE_PRESET="impossible",
+                VIDEO_TRANSCODE_TIMEOUT_SECONDS=1,
                 STARTUP_CATCH_UP_LIMIT=-5,
                 MAX_QUEUE_ATTEMPTS=0,
             )
@@ -45,10 +47,16 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config.max_message_length, 1)
         self.assertEqual(config.discord_file_limit_mb, 50)
         self.assertEqual(config.large_file_action, "send_text_link")
+        self.assertEqual(config.video_transcode_preset, "balanced")
+        self.assertEqual(config.video_transcode_timeout_seconds, 30)
         self.assertEqual(config.startup_catch_up_limit, 0)
         self.assertEqual(config.max_queue_attempts, 1)
         self.assertIn(
             ("invalid_large_file_action", "invalid-action"),
+            [(warning.kind, warning.value) for warning in warnings],
+        )
+        self.assertIn(
+            ("invalid_video_transcode_preset", "impossible"),
             [(warning.kind, warning.value) for warning in warnings],
         )
 
@@ -86,6 +94,8 @@ class ConfigManagerTests(unittest.TestCase):
         self.write_config(
             valid_config(
                 CHECK_INTERVAL=30,
+                VIDEO_TRANSCODE_PRESET="fast",
+                VIDEO_TRANSCODE_TIMEOUT_SECONDS=300,
                 STATE_DB_FILE="first.db",
                 QUEUE_RETRY_LIMIT=12,
             )
@@ -97,6 +107,8 @@ class ConfigManagerTests(unittest.TestCase):
             valid_config(
                 CHECK_INTERVAL=45,
                 TELEGRAM_CHANNELS=["new_channel"],
+                VIDEO_TRANSCODE_PRESET="quality",
+                VIDEO_TRANSCODE_TIMEOUT_SECONDS=900,
                 TELEGRAM_API_ID=999,
                 TELEGRAM_API_HASH="new-hash",
                 STATE_DB_FILE="second.db",
@@ -112,8 +124,15 @@ class ConfigManagerTests(unittest.TestCase):
         self.assertEqual(update.config.telegram_channels, ("new_channel",))
         self.assertEqual(
             update.changed_keys,
-            ("TELEGRAM_CHANNELS", "CHECK_INTERVAL"),
+            (
+                "TELEGRAM_CHANNELS",
+                "CHECK_INTERVAL",
+                "VIDEO_TRANSCODE_PRESET",
+                "VIDEO_TRANSCODE_TIMEOUT_SECONDS",
+            ),
         )
+        self.assertEqual(update.config.video_transcode_preset, "quality")
+        self.assertEqual(update.config.video_transcode_timeout_seconds, 900)
         self.assertEqual(update.config.telegram_api_id, initial.telegram_api_id)
         self.assertEqual(update.config.telegram_api_hash, initial.telegram_api_hash)
         self.assertEqual(update.config.state_db_file, "first.db")

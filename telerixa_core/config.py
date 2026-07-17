@@ -6,7 +6,11 @@ from typing import Any, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from i18n import normalize_language
-from .constants import CONFIG_RELOAD_KEYS, VALID_LARGE_FILE_ACTIONS
+from .constants import (
+    CONFIG_RELOAD_KEYS,
+    VALID_LARGE_FILE_ACTIONS,
+    VALID_VIDEO_TRANSCODE_PRESETS,
+)
 
 
 DEFAULT_DB_TIMEOUT_SECONDS = 30
@@ -40,6 +44,8 @@ class RuntimeConfig:
     app_timezone: tzinfo
     discord_file_limit_mb: int
     large_file_action: str
+    video_transcode_preset: str
+    video_transcode_timeout_seconds: int
     state_db_file: str
     queue_retry_limit: int
     startup_catch_up_limit: int
@@ -68,6 +74,8 @@ FIELD_BY_CONFIG_KEY = {
     "TIMEZONE": "timezone_name",
     "DISCORD_FILE_LIMIT_MB": "discord_file_limit_mb",
     "LARGE_FILE_ACTION": "large_file_action",
+    "VIDEO_TRANSCODE_PRESET": "video_transcode_preset",
+    "VIDEO_TRANSCODE_TIMEOUT_SECONDS": "video_transcode_timeout_seconds",
     "STARTUP_CATCH_UP_LIMIT": "startup_catch_up_limit",
     "MAX_QUEUE_ATTEMPTS": "max_queue_attempts",
 }
@@ -172,6 +180,30 @@ def build_runtime_config(raw_config, previous=None):
         warnings.append(ConfigWarning("invalid_large_file_action", large_file_action))
         large_file_action = "send_text_link"
 
+    video_transcode_preset = str(
+        raw_config.get(
+            "VIDEO_TRANSCODE_PRESET",
+            previous.video_transcode_preset if previous else "balanced",
+        )
+    ).strip().lower()
+    if video_transcode_preset not in VALID_VIDEO_TRANSCODE_PRESETS:
+        warnings.append(
+            ConfigWarning("invalid_video_transcode_preset", video_transcode_preset)
+        )
+        video_transcode_preset = "balanced"
+    video_transcode_timeout_seconds = _normalize_int(
+        raw_config.get(
+            "VIDEO_TRANSCODE_TIMEOUT_SECONDS",
+            previous.video_transcode_timeout_seconds if previous else 600,
+        ),
+        previous.video_transcode_timeout_seconds if previous else 600,
+        30,
+    )
+    video_transcode_timeout_seconds = min(
+        7200,
+        video_transcode_timeout_seconds,
+    )
+
     startup_catch_up_limit = _normalize_int(
         raw_config.get("STARTUP_CATCH_UP_LIMIT", default_startup_limit),
         default_startup_limit,
@@ -222,6 +254,8 @@ def build_runtime_config(raw_config, previous=None):
         app_timezone=app_timezone,
         discord_file_limit_mb=discord_file_limit_mb,
         large_file_action=large_file_action,
+        video_transcode_preset=video_transcode_preset,
+        video_transcode_timeout_seconds=video_transcode_timeout_seconds,
         state_db_file=state_db_file,
         queue_retry_limit=queue_retry_limit,
         startup_catch_up_limit=startup_catch_up_limit,

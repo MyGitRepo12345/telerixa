@@ -7,6 +7,8 @@ import shutil
 import sqlite3
 import subprocess
 
+from .ffmpeg_tools import find_ffmpeg_tools
+
 
 DISCORD_WEBHOOK_PREFIXES = (
     "https://discord.com/api/webhooks/",
@@ -123,9 +125,16 @@ def check_disk(base_dir):
 
 
 def check_ffmpeg():
-    executable = shutil.which("ffmpeg")
-    if not executable:
-        return diagnostic_result("ffmpeg", "warning", "ffmpeg_missing")
+    tools = find_ffmpeg_tools()
+    if tools is None:
+        return diagnostic_result(
+            "ffmpeg",
+            "warning",
+            "ffmpeg_missing",
+            tools="ffmpeg, ffprobe",
+        )
+    executable = tools.ffmpeg
+    probe_executable = tools.ffprobe
 
     creation_flags = 0
     if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -154,6 +163,64 @@ def check_ffmpeg():
             exit_code=completed.returncode,
         )
 
+    try:
+        probe_completed = subprocess.run(
+            [probe_executable, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            creationflags=creation_flags,
+        )
+        encoders_completed = subprocess.run(
+            [executable, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            creationflags=creation_flags,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return diagnostic_result(
+            "ffmpeg",
+            "error",
+            "ffmpeg_error",
+            error=str(error),
+        )
+    if probe_completed.returncode != 0 or encoders_completed.returncode != 0:
+        exit_code = (
+            probe_completed.returncode
+            if probe_completed.returncode != 0
+            else encoders_completed.returncode
+        )
+        return diagnostic_result(
+            "ffmpeg",
+            "error",
+            "ffmpeg_exit_error",
+            exit_code=exit_code,
+        )
+
+    encoders = encoders_completed.stdout or encoders_completed.stderr or ""
+
+    def has_encoder(name):
+        return any(
+            len(parts) >= 2 and parts[1] == name
+            for parts in (line.split() for line in encoders.splitlines())
+        )
+
+    missing_codecs = [
+        codec
+        for codec in ("libx264", "aac")
+        if not has_encoder(codec)
+    ]
+    if missing_codecs:
+        return diagnostic_result(
+            "ffmpeg",
+            "warning",
+            "ffmpeg_codec_missing",
+            codecs=", ".join(missing_codecs),
+        )
+
     version_line = (completed.stdout or completed.stderr or "").splitlines()
     version = version_line[0].strip() if version_line else "ffmpeg"
     return diagnostic_result(
@@ -161,6 +228,8 @@ def check_ffmpeg():
         "success",
         "ffmpeg_ok",
         version=version[:160],
+        codecs="libx264, aac",
+        source=tools.source,
     )
 
 

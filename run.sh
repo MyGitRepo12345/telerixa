@@ -5,6 +5,9 @@ cd "$(dirname "$0")"
 
 APP_NAME="Telerixa"
 VENV_DIR=".venv-linux"
+VENV_SCHEMA_VERSION="2"
+VENV_SCHEMA_FILE="$VENV_DIR/.telerixa-schema"
+VENV_NEEDS_MIGRATION="0"
 PYTHON_BIN=""
 SCRIPT_DIR="$(pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "$0")"
@@ -50,6 +53,10 @@ if [ -d ".venv" ] && [ ! -f ".venv/bin/activate" ]; then
   echo "Found Windows-style .venv; SteamOS will use $VENV_DIR instead."
 fi
 
+if [ -d "$VENV_DIR" ] && [ "$(cat "$VENV_SCHEMA_FILE" 2>/dev/null || true)" != "$VENV_SCHEMA_VERSION" ]; then
+  VENV_NEEDS_MIGRATION="1"
+fi
+
 if [ ! -d "$VENV_DIR" ]; then
   echo "Creating local virtual environment..."
   "$PYTHON_BIN" -m venv "$VENV_DIR"
@@ -63,6 +70,21 @@ if [ ! -f "$VENV_DIR/bin/activate" ]; then
 fi
 
 source "$VENV_DIR/bin/activate"
+
+if [ "$VENV_NEEDS_MIGRATION" = "1" ]; then
+  echo "Removing obsolete static-ffmpeg files from the local environment..."
+  python -m pip uninstall -y static-ffmpeg >/dev/null 2>&1 || true
+  SITE_PACKAGES_DIR="$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")"
+  case "$SITE_PACKAGES_DIR" in
+    "$SCRIPT_DIR/$VENV_DIR"/*)
+      rm -rf -- "$SITE_PACKAGES_DIR/static_ffmpeg"
+      ;;
+    *)
+      echo "ERROR: Refusing to clean an unexpected site-packages path: $SITE_PACKAGES_DIR"
+      exit 1
+      ;;
+  esac
+fi
 
 notify_discord_exit() {
   exit_code="$1"
@@ -123,6 +145,7 @@ PY
 
 echo "Installing Python dependencies..."
 python -m pip install --disable-pip-version-check -r requirements.txt
+printf '%s\n' "$VENV_SCHEMA_VERSION" > "$VENV_SCHEMA_FILE"
 
 echo "Checking Europe/Berlin timezone support..."
 if ! python -c "from zoneinfo import ZoneInfo; ZoneInfo('Europe/Berlin')" >/dev/null 2>&1; then

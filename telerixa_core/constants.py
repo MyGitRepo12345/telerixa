@@ -2,7 +2,7 @@ import os
 
 
 APP_NAME = "Telerixa"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 LOG_DIR = "logs"
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
@@ -21,14 +21,23 @@ CONFIG_RELOAD_KEYS = (
     "TIMEZONE",
     "DISCORD_FILE_LIMIT_MB",
     "LARGE_FILE_ACTION",
+    "VIDEO_TRANSCODE_PRESET",
+    "VIDEO_TRANSCODE_TIMEOUT_SECONDS",
     "STARTUP_CATCH_UP_LIMIT",
     "MAX_QUEUE_ATTEMPTS",
 )
 
 VALID_LARGE_FILE_ACTIONS = {
+    "compress_then_text",
     "send_text_link",
     "skip_post",
     "try_send_then_text",
+}
+
+VALID_VIDEO_TRANSCODE_PRESETS = {
+    "fast",
+    "balanced",
+    "quality",
 }
 
 ALBUM_LOOKUP_RADIUS = 20

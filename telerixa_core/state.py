@@ -111,10 +111,19 @@ def init_state_db(db_file, timeout_seconds, busy_timeout_ms, fallback_ts):
                 last_cycle_finished_at TEXT,
                 last_cycle_finished_ts REAL,
                 last_cycle_result TEXT,
-                last_error TEXT
+                last_error TEXT,
+                activity TEXT,
+                activity_detail TEXT,
+                activity_updated_at TEXT,
+                activity_updated_ts REAL,
+                last_transcode_result TEXT,
+                last_transcode_detail TEXT,
+                last_transcode_at TEXT,
+                last_transcode_ts REAL
             )
             """
         )
+        ensure_runtime_status_columns(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS failed_deliveries (
@@ -150,6 +159,28 @@ def init_state_db(db_file, timeout_seconds, busy_timeout_ms, fallback_ts):
         if not failed_deliveries_existed:
             migrate_processed_failures_to_archive(conn)
         conn.commit()
+
+
+def ensure_runtime_status_columns(conn):
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(runtime_status)").fetchall()
+    }
+    definitions = {
+        "activity": "TEXT",
+        "activity_detail": "TEXT",
+        "activity_updated_at": "TEXT",
+        "activity_updated_ts": "REAL",
+        "last_transcode_result": "TEXT",
+        "last_transcode_detail": "TEXT",
+        "last_transcode_at": "TEXT",
+        "last_transcode_ts": "REAL",
+    }
+    for column_name, column_type in definitions.items():
+        if column_name not in columns:
+            conn.execute(
+                f"ALTER TABLE runtime_status ADD COLUMN {column_name} {column_type}"
+            )
 
 
 def ensure_pending_message_columns(conn, fallback_ts):
@@ -344,7 +375,11 @@ def mark_runtime_started(
                 last_cycle_finished_at = NULL,
                 last_cycle_finished_ts = NULL,
                 last_cycle_result = NULL,
-                last_error = NULL
+                last_error = NULL,
+                activity = NULL,
+                activity_detail = NULL,
+                activity_updated_at = NULL,
+                activity_updated_ts = NULL
             """,
             (
                 service,
@@ -483,6 +518,8 @@ def mark_runtime_stopped(
             SET status = ?,
                 heartbeat_at = ?,
                 heartbeat_ts = ?,
+                activity = NULL,
+                activity_detail = NULL,
                 last_error = COALESCE(?, last_error)
             WHERE service = ?
             """,
@@ -494,6 +531,65 @@ def mark_runtime_stopped(
                 service,
             ),
         )
+        conn.commit()
+
+
+def update_runtime_activity(
+    db_file,
+    timeout_seconds,
+    busy_timeout_ms,
+    service,
+    activity,
+    detail,
+    transcode_result,
+    now_ts,
+    now_text,
+):
+    with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
+        if transcode_result:
+            conn.execute(
+                """
+                UPDATE runtime_status
+                SET activity = ?,
+                    activity_detail = ?,
+                    activity_updated_at = ?,
+                    activity_updated_ts = ?,
+                    last_transcode_result = ?,
+                    last_transcode_detail = ?,
+                    last_transcode_at = ?,
+                    last_transcode_ts = ?
+                WHERE service = ?
+                """,
+                (
+                    str(activity or "") or None,
+                    str(detail or "") or None,
+                    now_text,
+                    float(now_ts),
+                    str(transcode_result),
+                    str(detail or "") or None,
+                    now_text,
+                    float(now_ts),
+                    service,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE runtime_status
+                SET activity = ?,
+                    activity_detail = ?,
+                    activity_updated_at = ?,
+                    activity_updated_ts = ?
+                WHERE service = ?
+                """,
+                (
+                    str(activity or "") or None,
+                    str(detail or "") or None,
+                    now_text,
+                    float(now_ts),
+                    service,
+                ),
+            )
         conn.commit()
 
 
@@ -517,6 +613,14 @@ def get_runtime_status(
         "last_cycle_finished_ts",
         "last_cycle_result",
         "last_error",
+        "activity",
+        "activity_detail",
+        "activity_updated_at",
+        "activity_updated_ts",
+        "last_transcode_result",
+        "last_transcode_detail",
+        "last_transcode_at",
+        "last_transcode_ts",
     )
     with connect_state_db(db_file, timeout_seconds, busy_timeout_ms) as conn:
         row = conn.execute(
@@ -533,7 +637,15 @@ def get_runtime_status(
                    last_cycle_finished_at,
                    last_cycle_finished_ts,
                    last_cycle_result,
-                   last_error
+                   last_error,
+                   activity,
+                   activity_detail,
+                   activity_updated_at,
+                   activity_updated_ts,
+                   last_transcode_result,
+                   last_transcode_detail,
+                   last_transcode_at,
+                   last_transcode_ts
             FROM runtime_status
             WHERE service = ?
             """,

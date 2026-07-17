@@ -56,9 +56,16 @@ DISCORD_WEBHOOK_PREFIXES = (
 )
 
 LARGE_FILE_ACTION_KEYS = (
+    "compress_then_text",
     "send_text_link",
     "try_send_then_text",
     "skip_post",
+)
+
+VIDEO_TRANSCODE_PRESET_KEYS = (
+    "fast",
+    "balanced",
+    "quality",
 )
 
 
@@ -74,6 +81,13 @@ def get_large_file_action_options():
     return {
         action_key: tr(f"ui.action.{action_key}")
         for action_key in LARGE_FILE_ACTION_KEYS
+    }
+
+
+def get_video_transcode_preset_options():
+    return {
+        preset_key: tr(f"ui.transcode_preset.{preset_key}")
+        for preset_key in VIDEO_TRANSCODE_PRESET_KEYS
     }
 
 
@@ -148,6 +162,8 @@ def default_config():
         "TIMEZONE": "Europe/Berlin",
         "DISCORD_FILE_LIMIT_MB": 25,
         "LARGE_FILE_ACTION": "send_text_link",
+        "VIDEO_TRANSCODE_PRESET": "balanced",
+        "VIDEO_TRANSCODE_TIMEOUT_SECONDS": 600,
         "STARTUP_CATCH_UP_LIMIT": 10,
         "MAX_QUEUE_ATTEMPTS": 24,
     }
@@ -275,6 +291,19 @@ def parse_max_queue_attempts(raw_value):
     return attempts, ""
 
 
+def parse_transcode_timeout(raw_value):
+    raw_value = str(raw_value).strip()
+    try:
+        timeout_seconds = int(raw_value)
+    except (TypeError, ValueError):
+        return None, tr("ui.transcode_timeout_int")
+
+    if timeout_seconds < 30 or timeout_seconds > 7200:
+        return None, tr("ui.transcode_timeout_range")
+
+    return timeout_seconds, ""
+
+
 def validate_webhook(webhook):
     if not webhook:
         return tr("ui.webhook_empty")
@@ -292,6 +321,13 @@ def form_values_from_config(config):
         "language": normalize_language(config.get("LANGUAGE", "ru")),
         "discord_file_limit_mb": str(config.get("DISCORD_FILE_LIMIT_MB", 25)),
         "large_file_action": config.get("LARGE_FILE_ACTION", "send_text_link"),
+        "video_transcode_preset": config.get(
+            "VIDEO_TRANSCODE_PRESET",
+            "balanced",
+        ),
+        "video_transcode_timeout_seconds": str(
+            config.get("VIDEO_TRANSCODE_TIMEOUT_SECONDS", 600)
+        ),
         "startup_catch_up_limit": str(config.get("STARTUP_CATCH_UP_LIMIT", 10)),
         "max_queue_attempts": str(config.get("MAX_QUEUE_ATTEMPTS", 24)),
     }
@@ -407,22 +443,30 @@ def get_dashboard_snapshot(config, pending_limit=10, failed_limit=10):
                     "last_cycle_finished_ts",
                     "last_cycle_result",
                     "last_error",
+                    "activity",
+                    "activity_detail",
+                    "activity_updated_at",
+                    "activity_updated_ts",
+                    "last_transcode_result",
+                    "last_transcode_detail",
+                    "last_transcode_at",
+                    "last_transcode_ts",
+                )
+                available_runtime_columns = {
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info(runtime_status)"
+                    ).fetchall()
+                }
+                runtime_select = ", ".join(
+                    column
+                    if column in available_runtime_columns
+                    else f"NULL AS {column}"
+                    for column in runtime_columns
                 )
                 runtime_row = conn.execute(
-                    """
-                    SELECT service,
-                           status,
-                           pid,
-                           started_at,
-                           started_ts,
-                           heartbeat_at,
-                           heartbeat_ts,
-                           last_cycle_started_at,
-                           last_cycle_started_ts,
-                           last_cycle_finished_at,
-                           last_cycle_finished_ts,
-                           last_cycle_result,
-                           last_error
+                    f"""
+                    SELECT {runtime_select}
                     FROM runtime_status
                     WHERE service = ?
                     """,
@@ -1053,12 +1097,39 @@ def render_runtime_details(runtime):
         if cycle_at:
             cycle_text = f"{cycle_text} - {format_ui_timestamp(cycle_at)}"
         last_error = str(runtime.get("last_error") or "").strip()
+        activity = str(runtime.get("activity") or "").strip()
+        activity_detail = str(runtime.get("activity_detail") or "").strip()
+        if activity == "transcoding" and activity_detail:
+            activity_text = activity_detail
+        else:
+            activity_text = tr("ui.runtime_activity_idle")
+
+        last_transcode_result = str(
+            runtime.get("last_transcode_result") or ""
+        ).strip()
+        last_transcode_detail = str(
+            runtime.get("last_transcode_detail") or ""
+        ).strip()
+        if last_transcode_result and last_transcode_detail:
+            result_label = tr(
+                f"ui.runtime_transcode_{last_transcode_result}"
+            )
+            last_transcode_text = f"{result_label}: {last_transcode_detail}"
+            last_transcode_at = runtime.get("last_transcode_at")
+            if last_transcode_at:
+                last_transcode_text += (
+                    f" - {format_ui_timestamp(last_transcode_at)}"
+                )
+        else:
+            last_transcode_text = tr("ui.runtime_transcode_none")
     else:
         started_at = "-"
         heartbeat_at = "-"
         pid = "-"
         cycle_text = tr("ui.runtime_cycle_none")
         last_error = ""
+        activity_text = tr("ui.runtime_activity_idle")
+        last_transcode_text = tr("ui.runtime_transcode_none")
 
     error_html = ""
     if last_error:
@@ -1087,6 +1158,14 @@ def render_runtime_details(runtime):
       <div class="runtime-item">
         <span>{escape(tr("ui.runtime_cycle"))}</span>
         <strong>{escape(cycle_text)}</strong>
+      </div>
+      <div class="runtime-item">
+        <span>{escape(tr("ui.runtime_activity"))}</span>
+        <strong>{escape(activity_text)}</strong>
+      </div>
+      <div class="runtime-item">
+        <span>{escape(tr("ui.runtime_last_transcode"))}</span>
+        <strong>{escape(last_transcode_text)}</strong>
       </div>
       {error_html}
     </section>
@@ -1350,6 +1429,24 @@ def describe_config_changes(old_config, new_config):
             f"{action_options.get(new_action, new_action)}"
         )
 
+    old_preset = old_config.get("VIDEO_TRANSCODE_PRESET", "balanced")
+    new_preset = new_config.get("VIDEO_TRANSCODE_PRESET", "balanced")
+    if old_preset != new_preset:
+        preset_options = get_video_transcode_preset_options()
+        changes.append(
+            "Video conversion preset changed: "
+            f"{preset_options.get(old_preset, old_preset)} -> "
+            f"{preset_options.get(new_preset, new_preset)}"
+        )
+
+    old_timeout = old_config.get("VIDEO_TRANSCODE_TIMEOUT_SECONDS", 600)
+    new_timeout = new_config.get("VIDEO_TRANSCODE_TIMEOUT_SECONDS", 600)
+    if old_timeout != new_timeout:
+        changes.append(
+            "Video conversion timeout changed: "
+            f"{old_timeout}s -> {new_timeout}s"
+        )
+
     old_language = normalize_language(old_config.get("LANGUAGE", "ru"))
     new_language = normalize_language(new_config.get("LANGUAGE", "ru"))
     if old_language != new_language:
@@ -1379,6 +1476,11 @@ def render_settings_form(values, action, selected_language):
         selected_language,
         get_language_options(),
     )
+    transcode_preset_select = render_select(
+        "video_transcode_preset",
+        values.get("video_transcode_preset", "balanced"),
+        get_video_transcode_preset_options(),
+    )
     return f"""
     <form class="settings-form" method="post" action="/settings">
       <div class="grid">
@@ -1404,6 +1506,18 @@ def render_settings_form(values, action, selected_language):
           <label for="large_file_action">{escape(tr("ui.large_videos"))}</label>
           {action_select}
           <div class="hint">{escape(tr("ui.large_videos_hint"))}</div>
+        </div>
+
+        <div class="field">
+          <label for="video_transcode_preset">{escape(tr("ui.transcode_preset"))}</label>
+          {transcode_preset_select}
+          <div class="hint">{escape(tr("ui.transcode_preset_hint"))}</div>
+        </div>
+
+        <div class="field">
+          <label for="video_transcode_timeout_seconds">{escape(tr("ui.transcode_timeout"))}</label>
+          <input id="video_transcode_timeout_seconds" name="video_transcode_timeout_seconds" type="number" min="30" max="7200" step="1" value="{escape(values.get("video_transcode_timeout_seconds", ""))}">
+          <div class="hint">{escape(tr("ui.transcode_timeout_hint"))}</div>
         </div>
 
         <div class="field">
@@ -1823,7 +1937,7 @@ def render_page(config, notice="", error="", form_values=None, active_view="over
 
     .runtime-details {{
       display: grid;
-      grid-template-columns: 1fr 1fr 0.7fr 1.7fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       border-bottom: 1px solid var(--line);
     }}
 
@@ -1835,6 +1949,19 @@ def render_page(config, notice="", error="", form_values=None, active_view="over
 
     .runtime-item:first-child {{
       padding-left: 0;
+    }}
+
+    .runtime-item:nth-child(3n + 1) {{
+      padding-left: 0;
+    }}
+
+    .runtime-item:nth-child(3n) {{
+      border-right: 0;
+      padding-right: 0;
+    }}
+
+    .runtime-item:nth-child(-n + 3) {{
+      border-bottom: 1px solid var(--line);
     }}
 
     .runtime-item:last-of-type {{
@@ -2409,6 +2536,14 @@ class ConfigHandler(BaseHTTPRequestHandler):
             "language": normalize_language(form.get("language", [config.get("LANGUAGE", "ru")])[0]),
             "discord_file_limit_mb": form.get("discord_file_limit_mb", [""])[0].strip(),
             "large_file_action": form.get("large_file_action", ["send_text_link"])[0],
+            "video_transcode_preset": form.get(
+                "video_transcode_preset",
+                ["balanced"],
+            )[0],
+            "video_transcode_timeout_seconds": form.get(
+                "video_transcode_timeout_seconds",
+                ["600"],
+            )[0].strip(),
             "startup_catch_up_limit": form.get("startup_catch_up_limit", ["10"])[0].strip(),
             "max_queue_attempts": form.get("max_queue_attempts", ["24"])[0].strip(),
         }
@@ -2446,6 +2581,16 @@ class ConfigHandler(BaseHTTPRequestHandler):
         if action not in LARGE_FILE_ACTION_KEYS:
             errors.append(tr("ui.unknown_large_file_action"))
 
+        transcode_preset = form_values["video_transcode_preset"]
+        if transcode_preset not in VIDEO_TRANSCODE_PRESET_KEYS:
+            errors.append(tr("ui.unknown_transcode_preset"))
+
+        transcode_timeout, transcode_timeout_error = parse_transcode_timeout(
+            form_values["video_transcode_timeout_seconds"]
+        )
+        if transcode_timeout_error:
+            errors.append(transcode_timeout_error)
+
         catch_up_limit, catch_up_error = parse_catch_up_limit(form_values["startup_catch_up_limit"])
         if catch_up_error:
             errors.append(catch_up_error)
@@ -2473,6 +2618,8 @@ class ConfigHandler(BaseHTTPRequestHandler):
         new_config["TELEGRAM_CHANNELS"] = channels
         new_config["DISCORD_FILE_LIMIT_MB"] = limit
         new_config["LARGE_FILE_ACTION"] = action
+        new_config["VIDEO_TRANSCODE_PRESET"] = transcode_preset
+        new_config["VIDEO_TRANSCODE_TIMEOUT_SECONDS"] = transcode_timeout
         new_config["STARTUP_CATCH_UP_LIMIT"] = catch_up_limit
         new_config["MAX_QUEUE_ATTEMPTS"] = max_queue_attempts
 

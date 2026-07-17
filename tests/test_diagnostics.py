@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 
 from telerixa_core import diagnostics
 from telerixa_core import state
+from telerixa_core.ffmpeg_tools import FFmpegTools
 
 
 class FakeResponse:
@@ -122,24 +123,82 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual((healthy["status"], healthy["code"]), ("success", "disk_ok"))
 
     def test_ffmpeg_check_reports_optional_missing_and_version(self):
-        with patch.object(diagnostics.shutil, "which", return_value=None):
+        with patch.object(diagnostics, "find_ffmpeg_tools", return_value=None):
             missing = diagnostics.check_ffmpeg()
 
-        completed = diagnostics.subprocess.CompletedProcess(
+        version_completed = diagnostics.subprocess.CompletedProcess(
             ["ffmpeg", "-version"],
             0,
             stdout="ffmpeg version 7.1 test\n",
             stderr="",
         )
+        probe_completed = diagnostics.subprocess.CompletedProcess(
+            ["ffprobe", "-version"],
+            0,
+            stdout="ffprobe version 7.1 test\n",
+            stderr="",
+        )
+        encoders_completed = diagnostics.subprocess.CompletedProcess(
+            ["ffmpeg", "-encoders"],
+            0,
+            stdout=" V..... libx264 H.264\n A..... aac AAC\n",
+            stderr="",
+        )
         with (
-            patch.object(diagnostics.shutil, "which", return_value="ffmpeg"),
-            patch.object(diagnostics.subprocess, "run", return_value=completed),
+            patch.object(
+                diagnostics,
+                "find_ffmpeg_tools",
+                return_value=FFmpegTools("ffmpeg", "ffprobe", "system"),
+            ),
+            patch.object(
+                diagnostics.subprocess,
+                "run",
+                side_effect=[
+                    version_completed,
+                    probe_completed,
+                    encoders_completed,
+                ],
+            ),
         ):
             available = diagnostics.check_ffmpeg()
 
         self.assertEqual((missing["status"], missing["code"]), ("warning", "ffmpeg_missing"))
         self.assertEqual((available["status"], available["code"]), ("success", "ffmpeg_ok"))
         self.assertIn("7.1", available["details"]["version"])
+        self.assertEqual(available["details"]["source"], "system")
+
+    def test_ffmpeg_check_requires_transcoding_codecs(self):
+        completed = diagnostics.subprocess.CompletedProcess(
+            ["ffmpeg"],
+            0,
+            stdout="ffmpeg version 7.1\n",
+            stderr="",
+        )
+        no_codecs = diagnostics.subprocess.CompletedProcess(
+            ["ffmpeg", "-encoders"],
+            0,
+            stdout="encoders without required entries",
+            stderr="",
+        )
+        with (
+            patch.object(
+                diagnostics,
+                "find_ffmpeg_tools",
+                return_value=FFmpegTools("ffmpeg", "ffprobe", "managed"),
+            ),
+            patch.object(
+                diagnostics.subprocess,
+                "run",
+                side_effect=[completed, completed, no_codecs],
+            ),
+        ):
+            result = diagnostics.check_ffmpeg()
+
+        self.assertEqual(
+            (result["status"], result["code"]),
+            ("warning", "ffmpeg_codec_missing"),
+        )
+        self.assertEqual(result["details"]["codecs"], "libx264, aac")
 
     def test_run_diagnostics_isolates_unexpected_checker_failure(self):
         state.init_state_db(self.db_file, 30, 30000, 1000.0)

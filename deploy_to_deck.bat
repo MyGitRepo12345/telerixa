@@ -60,7 +60,7 @@ for %%F in (locales\en.json locales\ru.json) do (
     )
 )
 
-for %%F in (telerixa_core\__init__.py telerixa_core\config.py telerixa_core\constants.py telerixa_core\delivery.py telerixa_core\diagnostics.py telerixa_core\discord_delivery.py telerixa_core\formatting.py telerixa_core\lifecycle.py telerixa_core\logging_setup.py telerixa_core\media_delivery.py telerixa_core\models.py telerixa_core\rich_messages.py telerixa_core\state.py telerixa_core\telegram_reader.py) do (
+for %%F in (telerixa_core\__init__.py telerixa_core\config.py telerixa_core\constants.py telerixa_core\delivery.py telerixa_core\diagnostics.py telerixa_core\discord_delivery.py telerixa_core\ffmpeg_tools.py telerixa_core\formatting.py telerixa_core\lifecycle.py telerixa_core\logging_setup.py telerixa_core\media_delivery.py telerixa_core\models.py telerixa_core\rich_messages.py telerixa_core\state.py telerixa_core\telegram_reader.py telerixa_core\transcoding.py) do (
     if not exist "%%F" (
         echo ERROR: local file is missing: %%F
         exit /b 1

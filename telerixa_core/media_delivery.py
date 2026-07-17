@@ -16,14 +16,34 @@ from .discord_delivery import (
 )
 from .formatting import build_message_text, select_album_text_message, split_text
 from .models import SendResult
+from .logging_setup import log_success
 from .rich_messages import (
     get_message_media_attachments,
     get_rich_media_attachments,
     has_rich_message,
 )
+from .transcoding import (
+    TranscodeResult,
+    is_video_file,
+    is_video_media,
+    transcode_video,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+def _format_megabytes(size_bytes):
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+def _notify_transcode_status(callback, event, **details):
+    if callback is None:
+        return
+    try:
+        callback(event, details)
+    except Exception as error:
+        logger.warning(tr("media.transcode_status_failed", error=error))
 
 
 @dataclass(frozen=True)
@@ -32,6 +52,8 @@ class MediaDeliverySettings:
     max_message_length: int
     file_limit_mb: int
     large_file_action: str
+    transcode_preset: str = "balanced"
+    transcode_timeout_seconds: int = 600
 
 
 def _media_attachment_key(attachment):
@@ -74,6 +96,7 @@ async def send_to_discord(
     media_sent=False,
     rendered_text=None,
     progress_callback=None,
+    transcode_status_callback=None,
 ):
     """Send a Telegram message and media through a Discord webhook."""
     temp_files = []
@@ -133,6 +156,7 @@ async def send_to_discord(
                 )
 
         media_files = []
+        video_file_paths = set()
         media_download_failed = False
         media_download_errors = []
 
@@ -172,6 +196,10 @@ async def send_to_discord(
                             file_path = _apply_spoiler_filename(file_path)
                         temp_files.append(file_path)
                         media_files.append(file_path)
+                        if is_video_file(file_path) or is_video_media(
+                            attachment.media
+                        ):
+                            video_file_paths.add(file_path)
                     except Exception as error:
                         media_download_failed = True
                         media_download_errors.append(error)
@@ -261,6 +289,97 @@ async def send_to_discord(
                                     limit=settings.file_limit_mb,
                                 )
                             )
+                        elif (
+                            settings.large_file_action == "compress_then_text"
+                            and file_path in video_file_paths
+                        ):
+                            logger.info(
+                                tr(
+                                    "media.transcode_start",
+                                    file_path=file_path,
+                                    source_size=_format_megabytes(file_size),
+                                    limit=settings.file_limit_mb,
+                                    preset=settings.transcode_preset,
+                                )
+                            )
+                            _notify_transcode_status(
+                                transcode_status_callback,
+                                "started",
+                                channel=channel_name,
+                                message_id=telegram_message.id,
+                                source_size=file_size,
+                                limit_mb=settings.file_limit_mb,
+                                preset=settings.transcode_preset,
+                            )
+                            try:
+                                transcode_result = await transcode_video(
+                                    file_path,
+                                    os.path.dirname(file_path),
+                                    settings.file_limit_mb,
+                                    preset=settings.transcode_preset,
+                                    timeout_seconds=(
+                                        settings.transcode_timeout_seconds
+                                    ),
+                                )
+                            except Exception as error:
+                                transcode_result = TranscodeResult(
+                                    success=False,
+                                    error=str(error),
+                                    source_size=file_size,
+                                )
+                            if transcode_result.success:
+                                file_path = transcode_result.output_path
+                                temp_files.append(file_path)
+                                log_success(
+                                    logger,
+                                    tr(
+                                        "media.transcode_success",
+                                        source_size=_format_megabytes(
+                                            transcode_result.source_size
+                                        ),
+                                        output_size=_format_megabytes(
+                                            transcode_result.output_size
+                                        ),
+                                        duration=round(
+                                            transcode_result.duration_seconds,
+                                            1,
+                                        ),
+                                        attempts=transcode_result.attempts,
+                                    ),
+                                )
+                                _notify_transcode_status(
+                                    transcode_status_callback,
+                                    "succeeded",
+                                    channel=channel_name,
+                                    message_id=telegram_message.id,
+                                    source_size=transcode_result.source_size,
+                                    output_size=transcode_result.output_size,
+                                    duration_seconds=(
+                                        transcode_result.duration_seconds
+                                    ),
+                                    attempts=transcode_result.attempts,
+                                )
+                            else:
+                                logger.error(
+                                    tr(
+                                        "media.transcode_failed_fallback",
+                                        file_path=file_path,
+                                        error=transcode_result.error,
+                                    )
+                                )
+                                _notify_transcode_status(
+                                    transcode_status_callback,
+                                    "failed",
+                                    channel=channel_name,
+                                    message_id=telegram_message.id,
+                                    source_size=transcode_result.source_size,
+                                    duration_seconds=(
+                                        transcode_result.duration_seconds
+                                    ),
+                                    attempts=transcode_result.attempts,
+                                    error=transcode_result.error,
+                                )
+                                continue
                         else:
                             logger.warning(
                                 tr(
@@ -284,7 +403,8 @@ async def send_to_discord(
                 if not has_valid_files:
                     if (
                         skipped_large_files
-                        and settings.large_file_action == "send_text_link"
+                        and settings.large_file_action
+                        in {"send_text_link", "compress_then_text"}
                     ):
                         logger.warning(tr("media.all_large_send_text_link"))
                         if text_chunks:

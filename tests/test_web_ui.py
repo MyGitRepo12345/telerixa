@@ -27,6 +27,46 @@ class WebUiDatabaseTests(unittest.TestCase):
                 connection.execute("SELECT 1")
 
 
+class WebUiTranscodeSettingsTests(unittest.TestCase):
+    def setUp(self):
+        configure_language("en")
+
+    def test_transcode_settings_render_and_validate(self):
+        config = web_ui.default_config()
+        values = web_ui.form_values_from_config(config)
+        rendered = web_ui.render_settings_form(
+            values,
+            values["large_file_action"],
+            values["language"],
+        )
+
+        self.assertIn('value="compress_then_text"', rendered)
+        self.assertIn('name="video_transcode_preset"', rendered)
+        self.assertIn('name="video_transcode_timeout_seconds"', rendered)
+        self.assertEqual(web_ui.parse_transcode_timeout("600"), (600, ""))
+        self.assertIsNotNone(web_ui.parse_transcode_timeout("29")[1])
+
+    def test_runtime_details_show_active_and_last_conversion(self):
+        rendered = web_ui.render_runtime_details(
+            {
+                "started_at": "2026-07-17T10:00:00+00:00",
+                "heartbeat_at": "2026-07-17T10:00:05+00:00",
+                "pid": 123,
+                "last_cycle_result": "running",
+                "last_cycle_started_at": "2026-07-17T10:00:04+00:00",
+                "last_error": "",
+                "activity": "transcoding",
+                "activity_detail": "@demo/10: converting 40.0 MB",
+                "last_transcode_result": "success",
+                "last_transcode_detail": "@demo/9: 30.0 MB -> 20.0 MB",
+                "last_transcode_at": "2026-07-17T09:59:00+00:00",
+            }
+        )
+
+        self.assertIn("@demo/10: converting 40.0 MB", rendered)
+        self.assertIn("@demo/9: 30.0 MB -&gt; 20.0 MB", rendered)
+
+
 class WebUiDashboardTests(unittest.TestCase):
     def setUp(self):
         configure_language("en")
@@ -446,6 +486,51 @@ class WebUiRenderingTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=3)
+
+    def test_http_server_saves_video_conversion_settings(self):
+        config_file = Path(self.temp_dir.name) / "config.json"
+        config_file.write_text(json.dumps(self.config), encoding="utf-8")
+        form_data = urlencode(
+            {
+                "discord_webhook_url": self.config["DISCORD_WEBHOOK_URL"],
+                "telegram_channels": "alpha_news",
+                "language": "en",
+                "discord_file_limit_mb": "25",
+                "large_file_action": "compress_then_text",
+                "video_transcode_preset": "quality",
+                "video_transcode_timeout_seconds": "900",
+                "startup_catch_up_limit": "10",
+                "max_queue_attempts": "24",
+            }
+        ).encode("utf-8")
+
+        with (
+            patch.object(web_ui, "CONFIG_FILE", config_file),
+            patch.object(web_ui, "log_event"),
+        ):
+            server = web_ui.SingleInstanceHTTPServer(
+                ("127.0.0.1", 0),
+                web_ui.ConfigHandler,
+            )
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{server.server_port}/settings",
+                    data=form_data,
+                    method="POST",
+                )
+                with urlopen(request, timeout=3) as response:
+                    self.assertEqual(response.status, 200)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
+
+        saved = json.loads(config_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved["LARGE_FILE_ACTION"], "compress_then_text")
+        self.assertEqual(saved["VIDEO_TRANSCODE_PRESET"], "quality")
+        self.assertEqual(saved["VIDEO_TRANSCODE_TIMEOUT_SECONDS"], 900)
 
     def test_http_server_handles_failed_delivery_actions(self):
         db_file = Path(self.config["STATE_DB_FILE"])

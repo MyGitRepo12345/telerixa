@@ -6,7 +6,7 @@ Reliable Telegram-to-Discord forwarding for media-heavy news channels.
 
 Telerixa is a production-style Telegram to Discord forwarding bot built for a real daily workflow: monitoring multiple Telegram news channels and reposting text, photos, videos, albums, native rich messages, and reply context into Discord through webhooks.
 
-Current version: `0.4.0`
+Current version: `0.5.0`
 
 This repository is also a QA portfolio project: it contains not only the bot itself, but also reliability work around retries, state persistence, file-size limits, runtime configuration, logging, and Steam Deck deployment.
 
@@ -30,6 +30,7 @@ This repository is also a QA portfolio project: it contains not only the bot its
 - Live operational dashboard with heartbeat, queue state, channel checkpoints, and failure actions.
 - On-demand diagnostics for SQLite, Discord webhook access, Telegram session state, storage, and FFmpeg.
 - Configurable Discord file-size limit and behavior for oversized media.
+- Optional asynchronous FFmpeg video compression to fit oversized videos under the configured Discord limit, with text/link fallback when conversion is unavailable.
 - Startup catch-up limit for recovering after downtime without reposting the full backlog.
 - Color-coded console and web UI logs with plain-text rotating log files.
 - JSON-based localization with English and Russian catalogs.
@@ -55,7 +56,7 @@ The local UI listens on `127.0.0.1:8765` by default and provides:
 - manual retry, requeue, dismiss, and queue-clear actions;
 - system diagnostics and color-coded live logs without exposing the webhook in Overview responses.
 
-FFmpeg availability is reported for future video-transcoding support. Telerixa `0.4.0` does not invoke FFmpeg during delivery.
+Diagnostics verify `ffmpeg`, `ffprobe`, and the required H.264/AAC encoders. When `compress_then_text` is selected, Telerixa prefers existing system tools and otherwise downloads a pinned, SHA-256-verified user-local FFmpeg build. Overview also shows the active conversion and the most recent result.
 
 ## Reliability Notes
 
@@ -65,6 +66,7 @@ The bot is designed around failure cases that appeared during real use:
 - Telegram download interruptions.
 - Discord webhook errors.
 - Discord file-size limit changes after server boost changes.
+- Oversized videos that need conversion without blocking heartbeat or channel polling.
 - Duplicate posts after restart.
 - Albums where the caption is attached to a non-first media item.
 - Telegram replies/forwards that need extra context in Discord.
@@ -95,6 +97,8 @@ The Windows and SteamOS launchers keep Telerixa attached to their owning console
 | `telerixa_core/state.py` | SQLite schema, checkpoints, outbox, delivery progress, heartbeat, and failure archive |
 | `telerixa_core/telegram_reader.py` | Concurrent channel collection, album discovery, and chronological merging |
 | `telerixa_core/media_delivery.py` | Telegram media downloads and Discord multipart delivery |
+| `telerixa_core/transcoding.py` | Async FFmpeg probing, bitrate planning, bounded conversion, and cleanup |
+| `telerixa_core/ffmpeg_tools.py` | System-first discovery and verified managed FFmpeg bootstrap |
 | `telerixa_core/rich_messages.py` | Native Telegram rich-message rendering and embedded-media extraction |
 | `telerixa_core/lifecycle.py` | PID locks, signal handling, and owner-console monitoring |
 | `tests/` | Cross-platform regression suite |
@@ -131,11 +135,15 @@ Important settings:
 | `MAX_MESSAGE_LENGTH` | Discord text chunk limit |
 | `TIMEZONE` | IANA timezone used in logs and message timestamps |
 | `DISCORD_FILE_LIMIT_MB` | Per-file upload limit for the destination server |
-| `LARGE_FILE_ACTION` | `send_text_link`, `skip_post`, or `try_send_then_text` |
+| `LARGE_FILE_ACTION` | `compress_then_text`, `send_text_link`, `skip_post`, or `try_send_then_text` |
+| `VIDEO_TRANSCODE_PRESET` | `fast`, `balanced`, or `quality` FFmpeg preset |
+| `VIDEO_TRANSCODE_TIMEOUT_SECONDS` | Total time budget for one video conversion, from 30 to 7200 seconds |
 | `STARTUP_CATCH_UP_LIMIT` | Number of recent posts considered after downtime |
 | `MAX_QUEUE_ATTEMPTS` | Retry budget for non-network failures |
 
 Never commit the real `config.json`.
+
+Video conversion uses system `ffmpeg` and `ffprobe` when both are available. Otherwise, Telerixa's standard-library bootstrap downloads fixed FFmpeg 8.1.2 archives from the retained [BtbN FFmpeg Builds release](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-06-30-13-34). The versioned release URL never points to `latest`, and both the exact byte size and pinned SHA-256 digest must match before extraction. Only `ffmpeg` and `ffprobe` are extracted into `.telerixa-tools/`; no third-party Python installer or `sudo` is involved. A failed download can retry after a cooldown without restarting the bot. If setup or conversion fails, Telerixa sends the post text and Telegram link instead of leaving the post in an endless retry loop.
 
 ## Running
 

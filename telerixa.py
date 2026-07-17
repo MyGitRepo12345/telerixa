@@ -40,6 +40,11 @@ from telerixa_core.delivery import (
     prepare_pending_delivery as delivery_prepare_pending_delivery,
 )
 from telerixa_core.logging_setup import log_success, setup_logging
+from telerixa_core.ffmpeg_tools import (
+    FFmpegSetupError,
+    ensure_ffmpeg_tools,
+    find_ffmpeg_tools,
+)
 from telerixa_core.media_delivery import (
     MediaDeliverySettings,
     send_to_discord as send_media_to_discord,
@@ -80,6 +85,13 @@ def log_config_warning(config_warning):
     elif config_warning.kind == "timezone_not_found":
         logger.warning(
             tr("config.timezone_not_found", timezone=config_warning.value)
+        )
+    elif config_warning.kind == "invalid_video_transcode_preset":
+        logger.warning(
+            tr(
+                "config.invalid_video_transcode_preset",
+                preset=repr(config_warning.value),
+            )
         )
 
 
@@ -279,6 +291,60 @@ def record_runtime_stopped(status="stopped", error=""):
         RUNTIME_SERVICE_NAME,
         status,
         error,
+        now_ts,
+        format_ts(now_ts),
+    )
+
+
+def _format_runtime_megabytes(size_bytes):
+    return f"{int(size_bytes or 0) / (1024 * 1024):.1f} MB"
+
+
+def record_runtime_transcode_event(event, details):
+    channel = str(details.get("channel") or "")
+    message_id = details.get("message_id") or "-"
+    source_size = _format_runtime_megabytes(details.get("source_size"))
+    reference = f"@{channel}/{message_id}"
+
+    if event == "started":
+        activity = "transcoding"
+        result = ""
+        detail = tr(
+            "runtime.transcode_started",
+            reference=reference,
+            source_size=source_size,
+            limit=details.get("limit_mb"),
+            preset=details.get("preset"),
+        )
+    elif event == "succeeded":
+        activity = ""
+        result = "success"
+        detail = tr(
+            "runtime.transcode_succeeded",
+            reference=reference,
+            source_size=source_size,
+            output_size=_format_runtime_megabytes(details.get("output_size")),
+            duration=round(float(details.get("duration_seconds") or 0), 1),
+            attempts=details.get("attempts") or 0,
+        )
+    else:
+        activity = ""
+        result = "failed"
+        detail = tr(
+            "runtime.transcode_failed",
+            reference=reference,
+            source_size=source_size,
+            error=details.get("error") or "unknown error",
+        )
+
+    now_ts = get_now_ts()
+    record_runtime_update(
+        "transcode_status",
+        state_store.update_runtime_activity,
+        RUNTIME_SERVICE_NAME,
+        activity,
+        detail,
+        result,
         now_ts,
         format_ts(now_ts),
     )
@@ -1269,6 +1335,10 @@ async def send_to_discord(
         max_message_length=config_snapshot.max_message_length,
         file_limit_mb=config_snapshot.discord_file_limit_mb,
         large_file_action=config_snapshot.large_file_action,
+        transcode_preset=config_snapshot.video_transcode_preset,
+        transcode_timeout_seconds=(
+            config_snapshot.video_transcode_timeout_seconds
+        ),
     )
     return await send_media_to_discord(
         telegram_client,
@@ -1284,14 +1354,34 @@ async def send_to_discord(
         media_sent=media_sent,
         rendered_text=rendered_text,
         progress_callback=progress_callback,
+        transcode_status_callback=record_runtime_transcode_event,
     )
 
 
 # ===== MAIN LOOP =====
 
+async def prepare_video_transcoding_tools():
+    if runtime_config.large_file_action != "compress_then_text":
+        return None
+
+    available = find_ffmpeg_tools()
+    if available is None:
+        logger.info(tr("app.ffmpeg_downloading"))
+
+    try:
+        tools = await asyncio.to_thread(ensure_ffmpeg_tools)
+    except FFmpegSetupError as error:
+        logger.warning(tr("app.ffmpeg_setup_failed", error=error))
+        return None
+
+    log_success(logger, tr("app.ffmpeg_ready", source=tools.source))
+    return tools
+
+
 async def main():
     config_snapshot = runtime_config
     heartbeat_task = None
+    ffmpeg_setup_task = None
     runtime_tracking_started = False
     terminal_error = ""
     logger.info(tr("app.starting", app_name=APP_NAME, version=__version__))
@@ -1328,6 +1418,10 @@ async def main():
         heartbeat_task = asyncio.create_task(
             runtime_heartbeat_loop(),
             name="telerixa-runtime-heartbeat",
+        )
+        ffmpeg_setup_task = asyncio.create_task(
+            prepare_video_transcoding_tools(),
+            name="telerixa-ffmpeg-setup",
         )
         migrate_legacy_seen_messages()
 
@@ -1370,6 +1464,15 @@ async def main():
         logger.exception(tr("app.telegram_start_error", error=e))
         raise
     finally:
+        if ffmpeg_setup_task is not None:
+            if not ffmpeg_setup_task.done():
+                ffmpeg_setup_task.cancel()
+            try:
+                await ffmpeg_setup_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(tr("app.ffmpeg_setup_failed", error=e))
         if heartbeat_task is not None:
             heartbeat_task.cancel()
             try:

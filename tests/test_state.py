@@ -95,6 +95,52 @@ class StateStorageTests(unittest.TestCase):
         with self.assertRaises(sqlite3.ProgrammingError):
             connection.execute("SELECT 1")
 
+    def test_existing_runtime_table_gets_transcode_status_columns(self):
+        legacy_db = str(Path(self.temp_dir.name) / "legacy-runtime.db")
+        with closing(sqlite3.connect(legacy_db)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE runtime_status (
+                    service TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    pid INTEGER,
+                    started_at TEXT NOT NULL,
+                    started_ts REAL NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    heartbeat_ts REAL NOT NULL,
+                    last_cycle_started_at TEXT,
+                    last_cycle_started_ts REAL,
+                    last_cycle_finished_at TEXT,
+                    last_cycle_finished_ts REAL,
+                    last_cycle_result TEXT,
+                    last_error TEXT
+                )
+                """
+            )
+
+        state.init_state_db(
+            legacy_db,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            self.now_ts,
+        )
+
+        with closing(sqlite3.connect(legacy_db)) as conn:
+            columns = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(runtime_status)"
+                ).fetchall()
+            }
+        self.assertTrue(
+            {
+                "activity",
+                "activity_detail",
+                "last_transcode_result",
+                "last_transcode_detail",
+            }.issubset(columns)
+        )
+
     def test_runtime_status_tracks_process_and_cycle_lifecycle(self):
         state.mark_runtime_started(
             self.db_file,
@@ -144,6 +190,39 @@ class StateStorageTests(unittest.TestCase):
         self.assertEqual(runtime["last_cycle_result"], "error")
         self.assertEqual(runtime["last_error"], "Discord unavailable")
         self.assertEqual(runtime["heartbeat_ts"], self.now_ts + 20)
+
+        state.update_runtime_activity(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            "transcoding",
+            "@demo/10: converting 40.0 MB",
+            "",
+            self.now_ts + 25,
+            "2026-07-08T20:00:25+00:00",
+        )
+        state.update_runtime_activity(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+            "",
+            "@demo/10: 40.0 MB -> 20.0 MB",
+            "success",
+            self.now_ts + 26,
+            "2026-07-08T20:00:26+00:00",
+        )
+        runtime = state.get_runtime_status(
+            self.db_file,
+            DB_TIMEOUT_SECONDS,
+            DB_BUSY_TIMEOUT_MS,
+            "forwarder",
+        )
+        assert runtime is not None
+        self.assertIsNone(runtime["activity"])
+        self.assertEqual(runtime["last_transcode_result"], "success")
+        self.assertIn("40.0 MB -> 20.0 MB", runtime["last_transcode_detail"])
 
         state.touch_runtime_heartbeat(
             self.db_file,

@@ -2,7 +2,7 @@
 
 Telerixa пересылает посты из Telegram-каналов в Discord через webhook: текст, фото, видео, альбомы, native rich-сообщения и контекст ответов/форвардов.
 
-Текущая версия: `0.4.0`
+Текущая версия: `0.5.0`
 
 ## Возможности
 
@@ -21,6 +21,7 @@ Telerixa пересылает посты из Telegram-каналов в Discord
 - Живой operational dashboard с heartbeat, состоянием очереди, позициями каналов и действиями над ошибками.
 - Диагностика по запросу для SQLite, доступа к Discord webhook, Telegram-сессии, диска и FFmpeg.
 - Лимит размера файлов Discord и стратегия для больших видео.
+- Опциональное асинхронное сжатие больших видео через FFmpeg под заданный лимит Discord с fallback на текст и ссылку.
 - Настраиваемый catch-up хвост после простоя.
 - Цветовая индикация логов в консоли и web UI, при этом файлы логов остаются обычным текстом.
 - JSON-локализация с русским и английским каталогами.
@@ -45,7 +46,7 @@ Telerixa пересылает посты из Telegram-каналов в Discord
 - ручной retry, возврат из архива, скрытие и очистку очереди;
 - системную диагностику и цветные live-логи без вывода webhook на Overview.
 
-Диагностика проверяет доступность FFmpeg как задел под будущую конвертацию видео. Telerixa `0.4.0` пока не вызывает FFmpeg при доставке.
+Диагностика проверяет `ffmpeg`, `ffprobe` и необходимые энкодеры H.264/AAC. При выборе `compress_then_text` Telerixa сначала использует системные инструменты, а при их отсутствии скачивает закреплённую локальную сборку FFmpeg с обязательной проверкой SHA-256. Overview также показывает текущую конвертацию и последний результат.
 
 ## Надёжность
 
@@ -63,6 +64,8 @@ Telerixa пересылает посты из Telegram-каналов в Discord
 | `telerixa_core/state.py` | SQLite-схема, checkpoints, outbox, прогресс доставки, heartbeat и архив ошибок |
 | `telerixa_core/telegram_reader.py` | Параллельный сбор каналов, альбомы и хронологическое объединение |
 | `telerixa_core/media_delivery.py` | Скачивание Telegram-медиа и multipart-доставка в Discord |
+| `telerixa_core/transcoding.py` | Асинхронный FFmpeg probe, расчёт битрейта, ограниченная по времени конвертация и cleanup |
+| `telerixa_core/ffmpeg_tools.py` | Поиск системного FFmpeg и проверенная установка управляемой сборки |
 | `telerixa_core/rich_messages.py` | Рендеринг native rich-сообщений и извлечение встроенных медиа |
 | `telerixa_core/lifecycle.py` | PID-lock, сигналы завершения и мониторинг консоли-владельца |
 | `tests/` | Кроссплатформенный набор регрессионных тестов |
@@ -99,11 +102,15 @@ copy config.example.json config.json
 | `MAX_MESSAGE_LENGTH` | Лимит одного текстового chunk'а Discord |
 | `TIMEZONE` | IANA timezone для логов и времени сообщений |
 | `DISCORD_FILE_LIMIT_MB` | Лимит одного файла целевого Discord-сервера |
-| `LARGE_FILE_ACTION` | `send_text_link`, `skip_post` или `try_send_then_text` |
+| `LARGE_FILE_ACTION` | `compress_then_text`, `send_text_link`, `skip_post` или `try_send_then_text` |
+| `VIDEO_TRANSCODE_PRESET` | FFmpeg-пресет `fast`, `balanced` или `quality` |
+| `VIDEO_TRANSCODE_TIMEOUT_SECONDS` | Общий лимит времени одной конвертации от 30 до 7200 секунд |
 | `STARTUP_CATCH_UP_LIMIT` | Сколько последних постов нагонять после простоя |
 | `MAX_QUEUE_ATTEMPTS` | Лимит несетевых ошибок до переноса сообщения в архив |
 
 Реальный `config.json` не должен попадать в Git.
+
+Если системные `ffmpeg` и `ffprobe` доступны, Telerixa использует их. В противном случае собственный bootstrap на стандартной библиотеке Python скачивает закреплённые архивы FFmpeg 8.1.2 из сохранённого [релиза BtbN FFmpeg Builds](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-06-30-13-34). Версионированный URL не указывает на `latest`, а точный размер и SHA-256 обязаны совпасть до распаковки. Из архива извлекаются только `ffmpeg` и `ffprobe` в `.telerixa-tools/`; сторонний Python-установщик и `sudo` не используются. После неудачной загрузки бот сможет повторить её через cooldown без перезапуска. Если подготовка или конвертация завершится ошибкой, Telerixa отправит текст поста и ссылку на Telegram вместо бессмысленного бесконечного retry.
 
 ## Запуск
 

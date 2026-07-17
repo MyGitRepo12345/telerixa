@@ -10,6 +10,31 @@ This project follows semantic versioning while it is pre-1.0:
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-18
+
+### Added
+
+- Added asynchronous FFmpeg video compression for media that exceeds the configured Discord file limit.
+- Added `fast`, `balanced`, and `quality` conversion presets with a configurable total timeout.
+- Added live and last-result video conversion status to the Overview dashboard.
+- Added FFmpeg diagnostics for `ffprobe`, `libx264`, and `aac` in addition to binary availability.
+- Added system-first FFmpeg discovery with an automatic user-local managed download when conversion is enabled and the tools are missing.
+- Added a standard-library FFmpeg bootstrap pinned to retained BtbN FFmpeg 8.1.2 archives with fixed release URLs, exact-size checks, and SHA-256 verification before extraction.
+- Added regression coverage for managed FFmpeg discovery, archive integrity rejection, safe ZIP/TAR extraction, one-time setup, and cached setup failures.
+- Added regression coverage for successful conversion, size retry, timeout, cancellation, cleanup, fallback, and post-conversion network failure.
+
+### Changed
+
+- Oversized videos can now use `compress_then_text`: Telerixa compresses and uploads them, then falls back to post text and the Telegram link if conversion cannot finish safely.
+- Managed FFmpeg preparation now runs after runtime startup in the background, so an optional tool download cannot delay Telegram connection or heartbeat initialization.
+- Windows startup now installs missing pinned Python dependencies before launching the bot.
+- Removed the `static-ffmpeg` dependency and its retained downloaded binaries; existing Windows and SteamOS environments are migrated in place without discarding the working virtual environment.
+- Steam Deck deployment now validates and compiles the transcoding and FFmpeg bootstrap modules before replacing the running code.
+
+### Fixed
+
+- Managed FFmpeg downloads now abort immediately when a response exceeds the pinned archive size instead of consuming unbounded disk space before integrity rejection.
+
 ## [0.4.0] - 2026-07-17
 
 ### Added
