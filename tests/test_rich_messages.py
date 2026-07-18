@@ -124,6 +124,11 @@ class RichMessageTests(unittest.TestCase):
         self.assertIn("```text\nType | Status", rendered)
         self.assertIn("```latex\nE = mc^2\n```", rendered)
 
+    def test_inline_math_escapes_backticks(self):
+        rendered = rich_messages.render_rich_text(types.TextMath("x`y"))
+
+        self.assertEqual("`x'y`", rendered)
+
     def test_renderer_marks_unknown_blocks_instead_of_dropping_them(self):
         rendered = rich_messages.render_block({"_": "PageBlockFutureFeature"})
 

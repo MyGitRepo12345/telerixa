@@ -10,6 +10,13 @@ This project follows semantic versioning while it is pre-1.0:
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-18
+
+### Fixed
+
+- Fixed a Python 3.11 syntax error in Telegram rich-message inline math rendering.
+- Kept inline-math backtick sanitization without relying on Python 3.12+ f-string parsing.
+
 ## [0.5.0] - 2026-07-18
 
 ### Added

@@ -92,7 +92,8 @@ def render_rich_text(node):
     if kind == "TextImage":
         return f"[{tr('rich.inline_image')}]"
     if kind == "TextMath":
-        return f"`{str(node.get('source', '')).replace('`', "'")}`"
+        source = str(node.get("source", "")).replace("`", "'")
+        return f"`{source}`"
     if kind == "TextUrl":
         label = render_rich_text(node.get("text"))
         url = str(node.get("url", ""))

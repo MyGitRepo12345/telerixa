@@ -2,7 +2,7 @@ import os
 
 
 APP_NAME = "Telerixa"
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 LOG_DIR = "logs"
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
